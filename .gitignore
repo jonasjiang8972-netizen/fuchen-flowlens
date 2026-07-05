@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Go
+*.exe
+*.test
+*.out
+go.sum
+
+# Rust
+/target/
+Cargo.lock
+
+# Java/ JVM
+*.class
+*.jar
+*.war
+target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+
+# Build artifacts
+bin/
+tmp/
+tmp/
+
+# Kubernetes secrets
+*-secret.yaml
+*-secret.yml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
