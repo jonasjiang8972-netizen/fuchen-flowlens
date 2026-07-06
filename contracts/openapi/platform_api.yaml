@@ -1,0 +1,722 @@
+openapi: 3.0.3
+info:
+  title: FlowLens Platform API
+  description: |
+    拂尘 FlowLens 平台对外 REST API
+    前端 ↔ 后端通信协议
+  version: 1.0.0
+  contact:
+    name: FlowLens Team
+
+servers:
+  - url: https://api.flowlens.internal/v1
+    description: Production
+  - url: http://localhost:8080/api/v1
+    description: Development
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+tags:
+  - name: Assets
+    description: API 资产管理
+  - name: Alerts
+    description: 告警管理
+  - name: Sensitive
+    description: 敏感数据治理
+  - name: Agents
+    description: 采集器管理
+  - name: Reports
+    description: 报表与合规
+  - name: System
+    description: 系统管理
+
+paths:
+  # ============================================================
+  # 资产管理
+  # ============================================================
+  /assets:
+    get:
+      tags: [Assets]
+      summary: 资产列表
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: group_path
+          in: query
+          schema: { type: string }
+        - name: claim_status
+          in: query
+          schema: { type: string, enum: [unclaimed, claimed, escalated] }
+        - name: sensitivity
+          in: query
+          schema: { type: string, enum: [high, medium, low] }
+        - name: keyword
+          in: query
+          description: 搜索关键词（路径/主机名）
+          schema: { type: string }
+        - name: sort_by
+          in: query
+          schema: { type: string, default: last_seen }
+        - name: sort_order
+          in: query
+          schema: { type: string, enum: [asc, desc], default: desc }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Asset' }
+
+  /assets/{asset_id}:
+    get:
+      tags: [Assets]
+      summary: 资产详情
+      parameters:
+        - name: asset_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AssetDetail' }
+
+  /assets/{asset_id}/claim:
+    post:
+      tags: [Assets]
+      summary: 认领资产
+      parameters:
+        - name: asset_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                owner: { type: string }
+      responses:
+        '200':
+          description: 成功
+
+  /assets/import:
+    post:
+      tags: [Assets]
+      summary: 导入 OpenAPI 规范
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '202':
+          description: 已接受，异步处理
+
+  /assets/export:
+    get:
+      tags: [Assets]
+      summary: 导出资产为 OpenAPI 格式
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [openapi3, swagger2], default: openapi3 }
+        - name: group_path
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  # ============================================================
+  # 告警管理
+  # ============================================================
+  /alerts:
+    get:
+      tags: [Alerts]
+      summary: 告警列表
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: severity
+          in: query
+          schema: { type: string, enum: [critical, high, medium, low] }
+        - name: status
+          in: query
+          schema: { type: string, enum: [open, acknowledged, in_progress, resolved, false_positive] }
+        - name: source_requirement
+          in: query
+          schema: { type: string }
+        - name: start_time
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end_time
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Alert' }
+
+  /alerts/{alert_id}:
+    get:
+      tags: [Alerts]
+      summary: 告警详情
+      parameters:
+        - name: alert_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AlertDetail' }
+
+  /alerts/{alert_id}/close:
+    post:
+      tags: [Alerts]
+      summary: 关闭告警
+      parameters:
+        - name: alert_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                resolution: { type: string, enum: [resolved, false_positive] }
+                comment: { type: string }
+      responses:
+        '200':
+          description: 成功
+
+  /alerts/{alert_id}/disposal:
+    post:
+      tags: [Alerts]
+      summary: 执行处置动作
+      parameters:
+        - name: alert_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action: { type: string, enum: [ip_block, rate_limit, session_invalidate, captcha] }
+                target: { type: string, description: "IP地址或会话ID" }
+                duration_minutes: { type: integer, default: 30 }
+      responses:
+        '200':
+          description: 成功
+
+  # ============================================================
+  # 敏感数据治理
+  # ============================================================
+  /sensitive/fields:
+    get:
+      tags: [Sensitive]
+      summary: 敏感字段列表
+      parameters:
+        - name: sensitivity_level
+          in: query
+          schema: { type: string, enum: [high, medium, low] }
+        - name: data_type
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 成功
+
+  /sensitive/flow-map:
+    get:
+      tags: [Sensitive]
+      summary: 数据流动图谱
+      parameters:
+        - name: field_name
+          in: query
+          schema: { type: string }
+        - name: asset_id
+          in: query
+          schema: { type: string }
+        - name: depth
+          in: query
+          schema: { type: integer, default: 3 }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/FlowMap' }
+
+  /sensitive/masking-defects:
+    get:
+      tags: [Sensitive]
+      summary: 脱敏缺陷列表
+      parameters:
+        - name: defect_type
+          in: query
+          schema: { type: string, enum: [no_masking, incomplete_masking, inconsistent_masking] }
+      responses:
+        '200':
+          description: 成功
+
+  # ============================================================
+  # 采集器管理
+  # ============================================================
+  /agents:
+    get:
+      tags: [Agents]
+      summary: 采集器列表
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [online, offline, degraded] }
+        - name: cluster
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total: { type: integer }
+                  online_count: { type: integer }
+                  offline_count: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Agent' }
+
+  /agents/{agent_id}:
+    get:
+      tags: [Agents]
+      summary: 采集器详情
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AgentDetail' }
+
+  /agents/{agent_id}/config:
+    post:
+      tags: [Agents]
+      summary: 推送配置更新
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AgentConfig' }
+      responses:
+        '200':
+          description: 成功
+
+  /agents/{agent_id}/restart:
+    post:
+      tags: [Agents]
+      summary: 远程重启采集器
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '202':
+          description: 已接受
+
+  /agents/{agent_id}/upgrade:
+    post:
+      tags: [Agents]
+      summary: 触发采集器升级
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: { type: string }
+      responses:
+        '202':
+          description: 已接受
+
+  /agents/{agent_id}/logs:
+    get:
+      tags: [Agents]
+      summary: 采集器日志流
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: level
+          in: query
+          schema: { type: string, enum: [debug, info, warn, error] }
+        - name: follow
+          in: query
+          description: SSE 流式输出
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: 成功
+
+  /agents/health/summary:
+    get:
+      tags: [Agents]
+      summary: 全局健康度汇总
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_agents: { type: integer }
+                  online: { type: integer }
+                  offline: { type: integer }
+                  degraded: { type: integer }
+                  total_qps: { type: number }
+                  avg_drop_rate: { type: number }
+
+  # ============================================================
+  # 报表与合规
+  # ============================================================
+  /reports/generate:
+    post:
+      tags: [Reports]
+      summary: 触发报告生成
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                template: { type: string, enum: [financial, government, healthcare, general] }
+                period_start: { type: string, format: date }
+                period_end: { type: string, format: date }
+                format: { type: string, enum: [pdf, word], default: pdf }
+      responses:
+        '202':
+          description: 已接受，异步生成
+
+  /reports:
+    get:
+      tags: [Reports]
+      summary: 报告列表
+      responses:
+        '200':
+          description: 成功
+
+  /reports/{report_id}/download:
+    get:
+      tags: [Reports]
+      summary: 下载报告
+      parameters:
+        - name: report_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  # ============================================================
+  # 系统管理
+  # ============================================================
+  /system/audit-logs:
+    get:
+      tags: [System]
+      summary: 审计日志
+      parameters:
+        - name: operator
+          in: query
+          schema: { type: string }
+        - name: action
+          in: query
+          schema: { type: string }
+        - name: start_time
+          in: query
+          schema: { type: string, format: date-time }
+        - name: end_time
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: 成功
+
+  /system/users:
+    get:
+      tags: [System]
+      summary: 用户列表
+      responses:
+        '200':
+          description: 成功
+
+    post:
+      tags: [System]
+      summary: 创建用户
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                email: { type: string }
+                role: { type: string }
+      responses:
+        '201':
+          description: 创建成功
+
+  /health:
+    get:
+      tags: [System]
+      summary: 平台健康状态
+      security: []
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  version: { type: string }
+                  uptime_seconds: { type: integer }
+
+# ============================================================
+# 安全定义
+# ============================================================
+securitySchemes:
+  BearerAuth:
+    type: http
+    scheme: bearer
+    bearerFormat: JWT
+  ApiKeyAuth:
+    type: apiKey
+    in: header
+    name: X-API-Key
+
+# ============================================================
+# 数据模型
+# ============================================================
+components:
+  schemas:
+    Asset:
+      type: object
+      properties:
+        asset_id: { type: string }
+        path_normalized: { type: string }
+        method: { type: string }
+        protocol_type: { type: string }
+        host: { type: string }
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+        daily_avg_calls: { type: integer }
+        sensitivity_hint: { type: string }
+        claim_status: { type: string }
+        owner: { type: string }
+        group_path: { type: string }
+        normalization_confidence: { type: number }
+
+    AssetDetail:
+      allOf:
+        - $ref: '#/components/schemas/Asset'
+        - type: object
+          properties:
+            path_raw_samples:
+              type: array
+              items: { type: string }
+            source_distribution:
+              type: object
+              additionalProperties: { type: string }
+            alerts:
+              type: array
+              items: { $ref: '#/components/schemas/Alert' }
+            sensitive_fields:
+              type: array
+              items: { type: string }
+
+    Alert:
+      type: object
+      properties:
+        alert_id: { type: string }
+        timestamp: { type: string, format: date-time }
+        severity: { type: string }
+        title: { type: string }
+        risk_score: { type: integer }
+        status: { type: string }
+        source_requirement: { type: string }
+        affected_asset_count: { type: integer }
+
+    AlertDetail:
+      allOf:
+        - $ref: '#/components/schemas/Alert'
+        - type: object
+          properties:
+            description: { type: string }
+            source_ip: { type: string }
+            account_id: { type: string }
+            device_fingerprint: { type: string }
+            attack_path:
+              type: array
+              items:
+                type: object
+                properties:
+                  sequence: { type: integer }
+                  timestamp: { type: string, format: date-time }
+                  action: { type: string }
+                  detail: { type: string }
+            disposal:
+              type: object
+              properties:
+                action: { type: string }
+                status: { type: string }
+                executed_at: { type: string, format: date-time }
+
+    Agent:
+      type: object
+      properties:
+        agent_id: { type: string }
+        hostname: { type: string }
+        status: { type: string }
+        collect_mode: { type: string }
+        cluster: { type: string }
+        qps: { type: number }
+        last_heartbeat: { type: string, format: date-time }
+        agent_version: { type: string }
+
+    AgentDetail:
+      allOf:
+        - $ref: '#/components/schemas/Agent'
+        - type: object
+          properties:
+            os: { type: string }
+            arch: { type: string }
+            cpu_cores: { type: integer }
+            memory_mb: { type: integer }
+            capabilities:
+              type: array
+              items: { type: string }
+            metrics:
+              type: object
+              properties:
+                drop_rate: { type: number }
+                cpu_percent: { type: number }
+                kafka_lag: { type: integer }
+            config:
+              $ref: '#/components/schemas/AgentConfig'
+
+    AgentConfig:
+      type: object
+      properties:
+        kafka:
+          type: object
+          properties:
+            brokers:
+              type: array
+              items: { type: string }
+            topic: { type: string }
+            batch_size: { type: integer }
+        filter:
+          type: object
+          properties:
+            include_ports:
+              type: array
+              items: { type: string }
+            exclude_ports:
+              type: array
+              items: { type: string }
+        sampling:
+          type: object
+          properties:
+            sample_rate: { type: number }
+            always_capture_errors: { type: boolean }
+            always_capture_auth: { type: boolean }
+
+    FlowMap:
+      type: object
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              type: { type: string }
+              label: { type: string }
+        edges:
+          type: array
+          items:
+            type: object
+            properties:
+              source: { type: string }
+              target: { type: string }
+              field_name: { type: string }
+              call_count: { type: integer }

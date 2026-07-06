@@ -1,0 +1,174 @@
+syntax = "proto3";
+
+package flowlens.events.v1;
+
+option go_package = "github.com/jonasjiang8972-netizen/fuchen-flowlens/gen/go/events/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// ============================================================
+// 统一 API 事件结构 (APIEvent)
+// ============================================================
+// 所有采集模式统一输出此结构
+// Agent → Kafka (raw-api-events topic)
+// ============================================================
+
+message APIEvent {
+  // ---- 基础标识 ----
+  string event_id = 1;           // 全局唯一 ID (UUID)
+  google.protobuf.Timestamp timestamp = 2;  // 微秒级时间戳
+  string source = 3;             // "ebpf" | "dpdk" | "gateway_log" | "vpc_flow" | "pcap"
+  string agent_id = 4;           // 来源 Agent
+  
+  // ---- 网络层 ----
+  NetworkLayer network = 5;
+  
+  // ---- 应用层 ----
+  ApplicationLayer application = 6;
+  
+  // ---- 内容层 ----
+  ContentLayer content = 7;
+  
+  // ---- 元数据 ----
+  Metadata metadata = 8;
+  
+  // ---- 原始数据（可选，调试模式） ----
+  bytes raw_packet = 9;          // 原始包数据（仅调试模式携带）
+}
+
+message NetworkLayer {
+  string src_ip = 1;
+  string dst_ip = 2;
+  uint32 src_port = 3;
+  uint32 dst_port = 4;
+  string protocol = 5;           // "TCP" | "UDP"
+}
+
+message ApplicationLayer {
+  string method = 1;             // GET/POST/PUT/DELETE/GraphQL.query/...
+  string path_raw = 2;           // /api/v1/user/123
+  string path_normalized = 3;    // /api/v1/user/{id}
+  string host = 4;
+  uint32 status_code = 5;
+  uint64 bytes_in = 6;
+  uint64 bytes_out = 7;
+  double duration_ms = 8;
+  string protocol_type = 9;      // "REST" | "GraphQL" | "gRPC" | "WebSocket" | "SOAP" | "MQTT"
+  string tls_version = 10;       // "TLS1.2" | "TLS1.3" | "QUIC"
+  string tls_cipher_suite = 11;
+}
+
+message ContentLayer {
+  map<string, string> request_headers = 1;
+  map<string, string> response_headers = 2;
+  map<string, string> query_params = 3;
+  bytes request_body = 4;        // 截断/脱敏后
+  bytes response_body = 5;       // 截断/脱敏后
+  int32 request_body_size = 6;   // 原始大小
+  int32 response_body_size = 7;  // 原始大小
+  string content_type = 8;
+}
+
+message Metadata {
+  string env = 1;                // "prod" | "staging" | "dev"
+  string cluster = 2;
+  string namespace = 3;          // K8s namespace
+  string service_name = 4;
+  string pod_name = 5;
+  string node_name = 6;
+  string availability_zone = 7;
+  map<string, string> labels = 8; // 自定义标签
+}
+
+// ============================================================
+// 资产事件（Flink 处理后输出）
+// ============================================================
+
+message AssetEvent {
+  enum EventType {
+    EVENT_TYPE_UNSPECIFIED = 0;
+    EVENT_TYPE_DISCOVERED = 1;     // 新发现
+    EVENT_TYPE_UPDATED = 2;        // 信息更新
+    EVENT_TYPE_SHADOW_DETECTED = 3; // 影子API
+    EVENT_TYPE_ZOMBIE_DETECTED = 4; // 僵尸API
+    EVENT_TYPE_CHANGED = 5;        // 结构变更
+  }
+  
+  string asset_id = 1;
+  EventType event_type = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  
+  string path_normalized = 4;
+  string method = 5;
+  string protocol_type = 6;
+  
+  google.protobuf.Timestamp first_seen = 7;
+  google.protobuf.Timestamp last_seen = 8;
+  int32 daily_avg_calls = 9;
+  
+  string normalization_confidence = 10;
+  string sensitivity_hint = 11;
+  string claim_status = 12;
+  string owner = 13;
+  string group_path = 14;
+  
+  // 变更详情（event_type=CHANGED 时有值）
+  AssetChange change = 15;
+}
+
+message AssetChange {
+  string change_type = 1;         // "auth_method" | "field_added" | "field_removed" | "method_changed" | "endpoint_removed"
+  string before = 2;
+  string after = 3;
+  string severity = 4;           // "high" | "medium" | "low"
+}
+
+// ============================================================
+// 告警事件
+// ============================================================
+
+message AlertEvent {
+  enum Severity {
+    SEVERITY_UNSPECIFIED = 0;
+    SEVERITY_LOW = 1;
+    SEVERITY_MEDIUM = 2;
+    SEVERITY_HIGH = 3;
+    SEVERITY_CRITICAL = 4;
+  }
+  
+  string alert_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  Severity severity = 3;
+  
+  string source_requirement = 4;  // "FR-DET-001" | "FR-DET-002" | ...
+  string title = 5;
+  string description = 6;
+  
+  int32 risk_score = 7;           // 0-100
+  double confidence = 8;          // 0.0-1.0
+  
+  // 关联对象
+  repeated string affected_asset_ids = 9;
+  string source_ip = 10;
+  string account_id = 11;
+  string device_fingerprint = 12;
+  
+  // 攻击路径
+  repeated AttackStep attack_path = 13;
+  
+  // 处置状态
+  string status = 14;             // "open" | "acknowledged" | "in_progress" | "resolved" | "false_positive"
+  string assigned_to = 15;
+  string disposal_action = 16;    // "ip_block" | "rate_limit" | "session_invalidate" | "none"
+}
+
+message AttackStep {
+  int32 sequence = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  string action = 3;
+  string detail = 4;
+  string source_ip = 5;
+  string path = 6;
+  int32 status_code = 7;
+}

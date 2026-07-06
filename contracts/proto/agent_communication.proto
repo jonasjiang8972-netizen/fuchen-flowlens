@@ -1,0 +1,197 @@
+syntax = "proto3";
+
+package flowlens.agent.v1;
+
+option go_package = "github.com/jonasjiang8972-netizen/fuchen-flowlens/gen/go/agent/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// ============================================================
+// FlowLens Agent ↔ 平台管控面通信协议
+// ============================================================
+// 传输方式：gRPC bidirectional stream (mTLS)
+//         心跳/指标走 gRPC stream
+//         配置下发走 gRPC unary
+// ============================================================
+
+service AgentService {
+  // 双向流：心跳 + 指标上报 + 日志上报
+  rpc Stream(stream AgentToPlatform) returns (stream PlatformToAgent);
+  
+  // 采集器注册（首次连接时调用一次）
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+  
+  // 上报采集事件样本（调试用）
+  rpc ReportSample(SampleReportRequest) returns (SampleReportResponse);
+}
+
+// ============================================================
+// Agent → 平台
+// ============================================================
+
+message AgentToPlatform {
+  string agent_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  
+  oneof payload {
+    Heartbeat heartbeat = 10;
+    MetricsReport metrics = 11;
+    LogEntry log = 12;
+    StatusChange status_change = 13;
+  }
+}
+
+message Heartbeat {
+  string status = 1;  // "running" | "degraded" | "stopping"
+  string message = 2; // 状态描述（如降级原因）
+}
+
+message MetricsReport {
+  double qps = 1;                  // 当前处理 QPS
+  double packets_per_second = 2;   // 包处理速率
+  double drop_rate = 3;            // 丢包率
+  uint64 bytes_processed = 4;      // 累计处理字节数
+  double cpu_percent = 5;          // CPU 使用率
+  uint64 memory_mb = 6;            // 内存使用
+  int64 kafka_produce_latency_ms = 7; // Kafka 生产延迟
+  uint64 kafka_pending_messages = 8;  // Kafka 待发送消息数
+  string collect_mode = 9;         // 当前采集模式
+  map<string, string> labels = 10; // 自定义标签
+}
+
+message LogEntry {
+  enum Level {
+    LEVEL_UNSPECIFIED = 0;
+    LEVEL_DEBUG = 1;
+    LEVEL_INFO = 2;
+    LEVEL_WARN = 3;
+    LEVEL_ERROR = 4;
+  }
+  Level level = 1;
+  string message = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  map<string, string> fields = 4;
+}
+
+message StatusChange {
+  string previous_status = 1;
+  string current_status = 2;
+  string reason = 3;
+}
+
+// ============================================================
+// 平台 → Agent
+// ============================================================
+
+message PlatformToAgent {
+  string request_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  
+  oneof payload {
+    ConfigUpdate config_update = 10;
+    Command command = 11;
+    UpgradeRequest upgrade = 12;
+  }
+}
+
+message ConfigUpdate {
+  KafkaConfig kafka = 1;
+  FilterConfig filter = 2;
+  SamplingConfig sampling = 3;
+  int64 version = 4;  // 配置版本号
+}
+
+message KafkaConfig {
+  repeated string brokers = 1;
+  string topic = 2;
+  int32 batch_size = 3;
+  int32 flush_interval_ms = 4;
+}
+
+message FilterConfig {
+  repeated string include_ports = 1;
+  repeated string exclude_ports = 2;
+  repeated string include_paths = 3;   // 路径前缀白名单
+  repeated string exclude_paths = 4;   // 路径前缀黑名单
+  bool capture_headers = 5;
+  bool capture_body = 6;
+  int32 max_body_size_kb = 7;
+}
+
+message SamplingConfig {
+  double sample_rate = 1;        // 0.0~1.0
+  bool always_capture_errors = 2; // 错误响应始终采集
+  bool always_capture_auth = 3;   // 认证请求始终采集
+}
+
+message Command {
+  enum Type {
+    TYPE_UNSPECIFIED = 0;
+    TYPE_RESTART = 1;
+    TYPE_STOP = 2;
+    TYPE_START = 3;
+    TYPE_SET_LOG_LEVEL = 4;
+    TYPE_ENABLE_DEBUG = 5;
+    TYPE_DISABLE_DEBUG = 6;
+  }
+  Type type = 1;
+  string parameter = 2;
+}
+
+message UpgradeRequest {
+  string version = 1;
+  string download_url = 2;
+  string checksum_sha256 = 3;
+}
+
+// ============================================================
+// 注册相关
+// ============================================================
+
+message RegisterRequest {
+  string agent_id = 1;           // 平台预分配
+  string hostname = 2;
+  string os = 3;
+  string arch = 4;
+  string kubernetes_cluster = 5;
+  string collect_mode = 6;
+  uint32 cpu_cores = 7;
+  uint64 memory_mb = 8;
+  repeated string capabilities = 9;  // ["ebpf", "dpdk", "gateway_log"]
+  string agent_version = 10;
+  
+  // 环境信息
+  string cloud_provider = 11;    // aliyun / tencent / aws / on_premise
+  string region = 12;
+  string namespace = 13;         // K8s namespace
+  repeated string service_names = 14; // 关联的服务
+}
+
+message RegisterResponse {
+  bool success = 1;
+  string message = 2;
+  string session_token = 3;
+  ConfigUpdate initial_config = 4;  // 注册成功后下发初始配置
+  repeated string endpoints = 5;    // 可用服务端点
+}
+
+// ============================================================
+// 采样上报（调试）
+// ============================================================
+
+message SampleReportRequest {
+  string agent_id = 1;
+  repeated CapturedPacket packets = 2;
+}
+
+message CapturedPacket {
+  google.protobuf.Timestamp timestamp = 1;
+  bytes raw_data = 2;
+  uint32 length = 3;
+  string direction = 4;  // "in" | "out"
+}
+
+message SampleReportResponse {
+  bool accepted = 1;
+}
