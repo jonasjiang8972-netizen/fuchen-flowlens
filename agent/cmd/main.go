@@ -136,3 +136,24 @@ func createCollector(mode detector.CollectMode) (collector.Collector, error) {
 		return gwlog.New(), nil
 	}
 }
+
+func processEvents(ctx context.Context, coll collector.Collector, norm *normalizer.Normalizer, mon *health.Monitor) {
+	log := logger.L()
+	events := coll.Events()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt, ok := <-events:
+			if !ok {
+				log.Warn("Collector events channel closed")
+				return
+			}
+			normalized := norm.NormalizeEvent(evt)
+			if normalized.Application.PathNormalized == "" {
+				normalized.Application.PathNormalized = normalized.Application.PathRaw
+			}
+		}
+	}
+}

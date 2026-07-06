@@ -53,7 +53,9 @@ func (m *Monitor) Start(ctx context.Context) {
 			m.setStatus("stopping", "agent shutting down")
 			return
 		case <-ticker.C:
+			m.mu.Lock()
 			m.lastHeartbeat = time.Now()
+			m.mu.Unlock()
 		}
 	}
 }

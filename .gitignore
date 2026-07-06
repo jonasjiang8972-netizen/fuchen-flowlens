@@ -64,3 +64,4 @@ tmp/
 .terraform/
 *.tfstate
 *.tfstate.*
+web/node_modules/

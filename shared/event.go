@@ -1,4 +1,4 @@
-package event
+package shared
 
 import (
 	"encoding/json"
@@ -39,7 +39,7 @@ type ApplicationLayer struct {
 	TLSCipherSuite string `json:"tls_cipher_suite"`
 }
 
-type ContentLayer {
+type ContentLayer struct {
 	RequestHeaders  map[string]string `json:"request_headers"`
 	ResponseHeaders map[string]string `json:"response_headers"`
 	QueryParams     map[string]string `json:"query_params"`

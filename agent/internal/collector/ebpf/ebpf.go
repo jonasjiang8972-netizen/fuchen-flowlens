@@ -2,21 +2,20 @@ package ebpf
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/collector"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 )
 
 type EBPFCollector struct {
-	baseCollector
+	collector.BaseCollector
 	config collector.CollectorConfig
 	cancel context.CancelFunc
 }
 
 func New() collector.Collector {
 	return &EBPFCollector{
-		baseCollector: newBaseCollector(10000),
+		BaseCollector: collector.NewBaseCollector(10000),
 	}
 }
 

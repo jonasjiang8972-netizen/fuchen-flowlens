@@ -2,7 +2,6 @@ package normalizer
 
 import (
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,31 +34,31 @@ func New() *Normalizer {
 func (n *Normalizer) initPatterns() {
 	n.pathPatterns = []*pathPattern{
 		{
-			regexp:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d+)(/|$)`),
+			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d+)(/|$)`),
 			template:       "/$1/{id}$3",
 			paramNames:     []string{"id"},
 			minConfidence:  0.8,
 		},
 		{
-			regexp:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(/|$)`),
+			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(/|$)`),
 			template:       "/$1/{uuid}$3",
 			paramNames:     []string{"uuid"},
 			minConfidence:  0.9,
 		},
 		{
-			regexp:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d+)/([a-zA-Z0-9_-]+)/(\d+)(/|$)`),
+			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d+)/([a-zA-Z0-9_-]+)/(\d+)(/|$)`),
 			template:       "/$1/{id}/$3/{id}$5",
 			paramNames:     []string{"id", "id"},
 			minConfidence:  0.7,
 		},
 		{
-			regexp:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/([A-Z]{2,})(/|$)`),
+			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/([A-Z]{2,})(/|$)`),
 			template:       "/$1/{enum}$3",
 			paramNames:     []string{"enum"},
 			minConfidence:  0.6,
 		},
 		{
-			regexp:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d{14,})(/|$)`),
+			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d{14,})(/|$)`),
 			template:       "/$1/{timestamp}$3",
 			paramNames:     []string{"timestamp"},
 			minConfidence:  0.7,
@@ -81,13 +80,12 @@ func (n *Normalizer) NormalizePath(rawPath string) (string, float64) {
 
 	for _, pattern := range n.pathPatterns {
 		if matches := pattern.regex.FindStringSubmatch(rawPath); matches != nil {
-			result := pattern.template
+			result := rawPath
 			for i, name := range pattern.paramNames {
 				if i+1 < len(matches) {
-					result = strings.Replace(result, "{"+name+"}", "{"+name+"}", 1)
+					result = strings.Replace(result, matches[i+1], "{"+name+"}", 1)
 				}
 			}
-			result = pattern.regex.ReplaceAllString(rawPath, n.replacement(pattern))
 			n.mu.Lock()
 			n.staticPaths[rawPath] = result
 			n.mu.Unlock()
@@ -96,23 +94,6 @@ func (n *Normalizer) NormalizePath(rawPath string) (string, float64) {
 	}
 
 	return rawPath, 1.0
-}
-
-func (n *Normalizer) replacement(p *pathPattern) string {
-	result := p.template
-	for _, name := range p.paramNames {
-		result = strings.Replace(result, "{"+name+"}", "$"+n.indexOf(p.paramNames, name), 1)
-	}
-	return result
-}
-
-func (n *Normalizer) indexOf(names []string, target string) string {
-	for i, name := range names {
-		if name == target {
-			return strconv.Itoa(i + 1)
-		}
-	}
-	return "1"
 }
 
 func (n *Normalizer) NormalizeEvent(evt *shared.APIEvent) *shared.APIEvent {

@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/server"
 )
 
 func main() {
@@ -72,17 +73,17 @@ func setupRouter() *gin.Engine {
 
 	api := r.Group("/api/v1")
 	{
-		api.GET("/health", healthHandler)
-		api.GET("/agents", listAgentsHandler)
-		api.GET("/agents/:id", getAgentHandler)
-		api.GET("/agents/health/summary", agentHealthSummaryHandler)
-		api.GET("/assets", listAssetsHandler)
-		api.GET("/assets/:id", getAssetHandler)
-		api.POST("/assets/:id/claim", claimAssetHandler)
-		api.GET("/alerts", listAlertsHandler)
-		api.GET("/alerts/:id", getAlertHandler)
-		api.POST("/alerts/:id/:action", alertActionHandler)
-		api.GET("/sensitive/flow-map", flowMapHandler)
+		api.GET("/health", server.HealthHandler)
+		api.GET("/agents", server.ListAgentsHandler)
+		api.GET("/agents/:id", server.GetAgentHandler)
+		api.GET("/agents/health/summary", server.AgentHealthSummaryHandler)
+		api.GET("/assets", server.ListAssetsHandler)
+		api.GET("/assets/:id", server.GetAssetHandler)
+		api.POST("/assets/:id/claim", server.ClaimAssetHandler)
+		api.GET("/alerts", server.ListAlertsHandler)
+		api.GET("/alerts/:id", server.GetAlertHandler)
+		api.POST("/alerts/:id/:action", server.AlertActionHandler)
+		api.GET("/sensitive/flow-map", server.FlowMapHandler)
 	}
 
 	return r
@@ -99,12 +100,4 @@ func corsMiddleware() gin.HandlerFunc {
 		}
 		c.Next()
 	}
-}
-
-func healthHandler(c *gin.Context) {
-	c.JSON(200, gin.H{
-		"status":  "ok",
-		"version": version.Version,
-		"uptime":  time.Now().Unix(),
-	})
 }

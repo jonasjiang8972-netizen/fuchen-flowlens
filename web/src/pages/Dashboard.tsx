@@ -11,15 +11,21 @@ import { agentService, assetService, alertService } from '../services/api'
 
 const { Title } = Typography
 
-export default function Dashboard() {
+interface Props {
+  onNavigate: (page: string, id?: string) => void
+}
+
+export default function Dashboard({ onNavigate }: Props) {
   const [agents, setAgents] = useState<any[]>([])
   const [assets, setAssets] = useState<any[]>([])
   const [alerts, setAlerts] = useState<any[]>([])
 
   useEffect(() => {
-    setAgents(agentService.list())
-    setAssets(assetService.list())
-    setAlerts(alertService.list())
+    Promise.all([agentService.list(), assetService.list(), alertService.list()]).then(([a, as, al]) => {
+      setAgents(a)
+      setAssets(as)
+      setAlerts(al)
+    })
   }, [])
 
   const onlineAgents = agents.filter(a => a.status === 'online').length
@@ -94,7 +100,7 @@ export default function Dashboard() {
       },
     },
     { title: '风险评分', dataIndex: 'risk_score', key: 'score', width: 100,
-      render: (s: number) => <span style={{ color: s >= 80 ? '#F5222D' : s >= 60 ? '#FAAD14' : '#36CFC9' }}>{s}</span> },
+      render: (s: number) => <span style={{ color: s >= 80 ? '#F5222D' : s >= 60 ? '#FAAD14' : '#36CFC9' }}>{s}</span>,
     },
     {
       title: '状态', dataIndex: 'status', key: 'status', width: 100,
@@ -104,6 +110,9 @@ export default function Dashboard() {
       },
     },
   ]
+
+  const handleAlertClick = (alertId: string) => { onNavigate('alert-detail', alertId) }
+  const handleAssetClick = (assetId: string) => { onNavigate('asset-detail', assetId) }
 
   return (
     <div>
@@ -115,6 +124,7 @@ export default function Dashboard() {
               value={assets.length}
               prefix={<ApiOutlined style={{ color: '#36CFC9' }} />}
               valueStyle={{ color: '#F0F4F8', fontSize: '28px', fontWeight: 700 }}
+              suffix={<span style={{ fontSize: '12px', color: '#36CFC9', cursor: 'pointer' }} onClick={() => onNavigate('assets')}>查看全部 &gt;</span>}
             />
           </Card>
         </Col>
@@ -127,6 +137,7 @@ export default function Dashboard() {
               prefix={onlineAgents === agents.length ? <CheckCircleOutlined style={{ color: '#52C41A' }} /> : <WarningOutlined style={{ color: '#FAAD14' }} />}
               valueStyle={{ color: '#F0F4F8', fontSize: '28px', fontWeight: 700 }}
             />
+            <div style={{ marginTop: 8, fontSize: '12px', color: '#36CFC9', cursor: 'pointer' }} onClick={() => onNavigate('agents')}>查看详情 &gt;</div>
           </Card>
         </Col>
         <Col span={6}>
@@ -137,6 +148,7 @@ export default function Dashboard() {
               prefix={<AlertOutlined style={{ color: '#F5222D' }} />}
               valueStyle={{ color: '#F5222D', fontSize: '28px', fontWeight: 700 }}
             />
+            <div style={{ marginTop: 8, fontSize: '12px', color: '#F5222D', cursor: 'pointer' }} onClick={() => onNavigate('alerts')}>查看告警 &gt;</div>
           </Card>
         </Col>
         <Col span={6}>
@@ -166,13 +178,39 @@ export default function Dashboard() {
 
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col span={24}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>Top 风险告警</span>}>
+          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>Top 风险告警（点击行下钻）</span>}>
             <Table
               columns={topAlertsColumns}
               dataSource={alerts}
               rowKey="alert_id"
               pagination={false}
               size="middle"
+              onRow={(record) => ({ onClick: () => handleAlertClick(record.alert_id), style: { cursor: 'pointer' } })}
+            />
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
+        <Col span={24}>
+          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>高风险资产（点击行下钻）</span>}>
+            <Table
+              columns={[
+                { title: '资产ID', dataIndex: 'asset_id', key: 'id', width: 100,
+                  render: (id: string) => <a style={{ color: '#36CFC9' }} onClick={(e) => { e.stopPropagation(); handleAssetClick(id) }}>{id}</a> },
+                { title: '路径', dataIndex: 'path_normalized', key: 'path' },
+                { title: '敏感度', dataIndex: 'sensitivity_hint', key: 'sens', width: 80,
+                  render: (s: string) => <Tag color={s === 'high' ? 'red' : s === 'medium' ? 'orange' : 'green'}>{s}</Tag> },
+                { title: '状态', dataIndex: 'status', key: 'status', width: 100,
+                  render: (s: string) => <Tag color={s === 'active' ? 'green' : s === 'shadow' ? 'orange' : 'red'}>{s}</Tag> },
+                { title: '日均调用', dataIndex: 'daily_avg_calls', key: 'calls', width: 120,
+                  render: (c: number) => c?.toLocaleString() },
+              ]}
+              dataSource={assets.filter((a: any) => a.sensitivity_hint === 'high').slice(0, 5)}
+              rowKey="asset_id"
+              pagination={false}
+              size="middle"
+              onRow={(record) => ({ onClick: () => handleAssetClick(record.asset_id), style: { cursor: 'pointer' } })}
             />
           </Card>
         </Col>

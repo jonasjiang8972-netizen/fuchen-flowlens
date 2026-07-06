@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -15,7 +16,7 @@ import (
 )
 
 type GatewayLogCollector struct {
-	baseCollector
+	collector.BaseCollector
 	config     collector.CollectorConfig
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
@@ -23,7 +24,7 @@ type GatewayLogCollector struct {
 
 func New() collector.Collector {
 	return &GatewayLogCollector{
-		baseCollector: newBaseCollector(10000),
+		BaseCollector: collector.NewBaseCollector(10000),
 	}
 }
 
@@ -33,16 +34,12 @@ func (g *GatewayLogCollector) Name() string {
 
 func (g *GatewayLogCollector) Initialize(cfg collector.CollectorConfig) error {
 	g.config = cfg
-	if g.config.GWLogPath == "" {
-		return nil
-	}
 	return nil
 }
 
 func (g *GatewayLogCollector) Start(ctx context.Context) error {
-	log := logger.L()
 	if g.config.GWLogPath == "" {
-		return log.Error("gateway log path not configured")
+		return fmt.Errorf("gateway log path not configured")
 	}
 
 	ctx, g.cancel = context.WithCancel(ctx)
@@ -53,7 +50,7 @@ func (g *GatewayLogCollector) Start(ctx context.Context) error {
 		g.tailLoop(ctx)
 	}()
 
-	log.Infof("Gateway log collector started: %s (format: %s)", g.config.GWLogPath, g.config.GWLogFormat)
+	logger.L().Infof("Gateway log collector started: %s (format: %s)", g.config.GWLogPath, g.config.GWLogFormat)
 	return nil
 }
 
@@ -66,9 +63,6 @@ func (g *GatewayLogCollector) Stop() error {
 }
 
 func (g *GatewayLogCollector) HealthCheck() error {
-	if g.config.GWLogPath == "" {
-		return nil
-	}
 	if _, err := os.Stat(g.config.GWLogPath); err != nil {
 		return err
 	}
@@ -76,18 +70,16 @@ func (g *GatewayLogCollector) HealthCheck() error {
 }
 
 func (g *GatewayLogCollector) tailLoop(ctx context.Context) {
-	log := logger.L()
-
 	file, err := os.Open(g.config.GWLogPath)
 	if err != nil {
-		log.Errorf("Failed to open gateway log: %v", err)
+		logger.L().Errorf("Failed to open gateway log: %v", err)
 		return
 	}
 	defer file.Close()
 
 	_, err = file.Seek(0, 2)
 	if err != nil {
-		log.Errorf("Failed to seek log file: %v", err)
+		logger.L().Errorf("Failed to seek log file: %v", err)
 		return
 	}
 
@@ -111,7 +103,7 @@ func (g *GatewayLogCollector) tailLoop(ctx context.Context) {
 				}
 				evt := g.parseLine(line)
 				if evt != nil {
-					g.emit(evt)
+					g.Emit(evt)
 				}
 			}
 		}
@@ -119,16 +111,11 @@ func (g *GatewayLogCollector) tailLoop(ctx context.Context) {
 }
 
 func (g *GatewayLogCollector) parseLine(line string) *shared.APIEvent {
-	switch g.config.GWLogFormat {
-	case "json":
-		return g.parseJSON(line)
-	case "nginx":
-		return g.parseNginx(line)
-	case "envoy":
-		return g.parseEnvoy(line)
-	default:
-		return g.parseJSON(line)
+	format := g.config.GWLogFormat
+	if format == "" {
+		format = "json"
 	}
+	return g.parseJSON(line)
 }
 
 func (g *GatewayLogCollector) parseJSON(line string) *shared.APIEvent {
@@ -139,7 +126,7 @@ func (g *GatewayLogCollector) parseJSON(line string) *shared.APIEvent {
 
 	now := time.Now()
 	evt := &shared.APIEvent{
-		EventID:   generateID(),
+		EventID:   fmt.Sprintf("%d-%d", now.Unix(), now.UnixMilli()%100000),
 		Timestamp: now,
 		Source:    "gateway_log",
 		Application: shared.ApplicationLayer{
@@ -187,37 +174,4 @@ func (g *GatewayLogCollector) parseJSON(line string) *shared.APIEvent {
 	}
 
 	return evt
-}
-
-func (g *GatewayLogCollector) parseNginx(line string) *shared.APIEvent {
-	now := time.Now()
-	evt := &shared.APIEvent{
-		EventID:   generateID(),
-		Timestamp: now,
-		Source:    "gateway_log",
-		Application: shared.ApplicationLayer{
-			ProtocolType: "REST",
-		},
-	}
-	evt.Network.SrcIP = "0.0.0.0"
-	evt.Application.Method = "GET"
-	evt.Application.StatusCode = 200
-	return evt
-}
-
-func (g *GatewayLogCollector) parseEnvoy(line string) *shared.APIEvent {
-	return g.parseNginx(line)
-}
-
-func generateID() string {
-	return time.Now().Format("20060102") + "-" + randomStr(8)
-}
-
-func randomStr(n int) string {
-	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = letters[time.Now().UnixNano()%int64(len(letters))]
-	}
-	return string(b)
 }

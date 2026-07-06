@@ -1,15 +1,18 @@
 import { useEffect, useState } from 'react'
 import { Table, Tag, Button, Space, Typography, Card } from 'antd'
-import { claimAsset } from '../services/api'
+import { claimAsset, assetService } from '../services/api'
 
 const { Title } = Typography
 
-export default function Assets() {
+interface Props {
+  onNavigate: (page: string, id?: string) => void
+}
+
+export default function Assets({ onNavigate }: Props) {
   const [assets, setAssets] = useState<any[]>([])
 
   useEffect(() => {
-    const { assetService } = require('../services/api')
-    setAssets(assetService.list())
+    assetService.list().then(setAssets)
   }, [])
 
   const handleClaim = (assetId: string) => {
@@ -48,21 +51,20 @@ export default function Assets() {
     {
       title: '操作', key: 'action', width: 100,
       render: (_: any, record: any) => (
-        record.claim_status === 'unclaimed' ? (
-          <Button size="small" type="primary" onClick={() => handleClaim(record.asset_id)}>认领</Button>
-        ) : null
+        <Button size="small" type="primary" onClick={() => onNavigate('asset-detail', record.asset_id)}>详情</Button>
       ),
     },
   ]
 
   return (
-    <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>API 资产列表</span>}>
+    <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>API 资产列表（点击行查看详情）</span>}>
       <Table
         columns={columns}
         dataSource={assets}
         rowKey="asset_id"
         pagination={{ pageSize: 20 }}
         size="middle"
+        onRow={(record) => ({ onClick: () => onNavigate('asset-detail', record.asset_id), style: { cursor: 'pointer' } })}
       />
     </Card>
   )

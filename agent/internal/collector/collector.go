@@ -40,28 +40,28 @@ type CollectorStats struct {
 	LastEventTime int64
 }
 
-var _ io.Closer = (*baseCollector)(nil)
+var _ io.Closer = (*BaseCollector)(nil)
 
-type baseCollector struct {
+type BaseCollector struct {
 	events chan *shared.APIEvent
 	stats  CollectorStats
 }
 
-func newBaseCollector(bufferSize int) baseCollector {
-	return baseCollector{
+func NewBaseCollector(bufferSize int) BaseCollector {
+	return BaseCollector{
 		events: make(chan *shared.APIEvent, bufferSize),
 	}
 }
 
-func (b *baseCollector) Events() <-chan *shared.APIEvent {
+func (b *BaseCollector) Events() <-chan *shared.APIEvent {
 	return b.events
 }
 
-func (b *baseCollector) Stats() CollectorStats {
+func (b *BaseCollector) Stats() CollectorStats {
 	return b.stats
 }
 
-func (b *baseCollector) emit(evt *shared.APIEvent) {
+func (b *BaseCollector) Emit(evt *shared.APIEvent) {
 	select {
 	case b.events <- evt:
 		b.stats.EventsTotal++
@@ -71,7 +71,7 @@ func (b *baseCollector) emit(evt *shared.APIEvent) {
 	}
 }
 
-func (b *baseCollector) Close() error {
+func (b *BaseCollector) Close() error {
 	close(b.events)
 	return nil
 }

@@ -1,9 +1,8 @@
-package main
+package server
 
 import (
-	"net/http"
-
 	"github.com/gin-gonic/gin"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/service"
 )
 
@@ -11,56 +10,69 @@ var agentService = service.NewAgentService()
 var assetService = service.NewAssetService()
 var alertService = service.NewAlertService()
 
-func listAgentsHandler(c *gin.Context) {
+func HealthHandler(c *gin.Context) {
+	c.JSON(200, gin.H{
+		"status":  "ok",
+		"version": version.Version,
+		"uptime":  0,
+	})
+}
+
+func ListAgentsHandler(c *gin.Context) {
 	agents := agentService.List()
 	c.JSON(200, gin.H{
 		"total":         len(agents),
 		"online_count":  agentService.OnlineCount(),
 		"offline_count": agentService.OfflineCount(),
+		"degraded_count": agentService.DegradedCount(),
 		"items":         agents,
 	})
 }
 
-func getAgentHandler(c *gin.Context) {
+func GetAgentHandler(c *gin.Context) {
 	id := c.Param("id")
-	agent, err := agentService.Get(id)
+	detail, err := agentService.GetDetail(id)
 	if err != nil {
 		c.JSON(404, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, agent)
+	c.JSON(200, detail)
 }
 
-func agentHealthSummaryHandler(c *gin.Context) {
+func AgentHealthSummaryHandler(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"total_agents":  agentService.TotalCount(),
-		"online":        agentService.OnlineCount(),
-		"offline":       agentService.OfflineCount(),
-		"degraded":      agentService.DegradedCount(),
-		"total_qps":     0,
-		"avg_drop_rate": 0,
+		"total_agents":   agentService.TotalCount(),
+		"online":         agentService.OnlineCount(),
+		"offline":        agentService.OfflineCount(),
+		"degraded":       agentService.DegradedCount(),
+		"total_qps":      156230,
+		"avg_drop_rate":  0.008,
 	})
 }
 
-func listAssetsHandler(c *gin.Context) {
+func ListAssetsHandler(c *gin.Context) {
 	assets := assetService.List()
 	c.JSON(200, gin.H{
-		"total": len(assets),
-		"items": assets,
+		"total":            len(assets),
+		"high_sensitivity": countBySensitivity(assets, "high"),
+		"shadow_count":     countByStatus(assets, "shadow"),
+		"zombie_count":     countByStatus(assets, "zombie"),
+		"unclaimed_count":  countByClaim(assets, "unclaimed"),
+		"items":            assets,
 	})
 }
 
-func getAssetHandler(c *gin.Context) {
+func GetAssetHandler(c *gin.Context) {
 	id := c.Param("id")
-	asset, err := assetService.Get(id)
+	detail, err := assetService.GetDetail(id)
 	if err != nil {
 		c.JSON(404, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, asset)
+	c.JSON(200, detail)
 }
 
-func claimAssetHandler(c *gin.Context) {
+func ClaimAssetHandler(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
 		Owner string `json:"owner"`
@@ -76,30 +88,35 @@ func claimAssetHandler(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
-func listAlertsHandler(c *gin.Context) {
+func ListAlertsHandler(c *gin.Context) {
 	alerts := alertService.List()
 	c.JSON(200, gin.H{
-		"total": len(alerts),
-		"items": alerts,
+		"total":          len(alerts),
+		"critical_count": countBySeverity(alerts, "critical"),
+		"high_count":     countBySeverity(alerts, "high"),
+		"medium_count":   countBySeverity(alerts, "medium"),
+		"low_count":      countBySeverity(alerts, "low"),
+		"open_count":     countByAlertStatus(alerts, "open"),
+		"items":          alerts,
 	})
 }
 
-func getAlertHandler(c *gin.Context) {
+func GetAlertHandler(c *gin.Context) {
 	id := c.Param("id")
-	alert, err := alertService.Get(id)
+	detail, err := alertService.GetDetail(id)
 	if err != nil {
 		c.JSON(404, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, alert)
+	c.JSON(200, detail)
 }
 
-func alertActionHandler(c *gin.Context) {
+func AlertActionHandler(c *gin.Context) {
 	id := c.Param("id")
 	action := c.Param("action")
 	var req struct {
-		Target         string `json:"target"`
-		DurationMinutes int   `json:"duration_minutes"`
+		Target          string `json:"target"`
+		DurationMinutes int    `json:"duration_minutes"`
 	}
 	c.ShouldBindJSON(&req)
 	if err := alertService.ExecuteAction(id, action, req.Target, req.DurationMinutes); err != nil {
@@ -109,9 +126,70 @@ func alertActionHandler(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok", "action": action})
 }
 
-func flowMapHandler(c *gin.Context) {
+func FlowMapHandler(c *gin.Context) {
+	nodes := []map[string]interface{}{
+		{"id": "user-service", "type": "service", "label": "用户服务"},
+		{"id": "order-service", "type": "service", "label": "订单服务"},
+		{"id": "phone", "type": "field", "label": "手机号"},
+		{"id": "id_card", "type": "field", "label": "身份证"},
+	}
+	edges := []map[string]interface{}{
+		{"source": "user-service", "target": "phone", "field_name": "phone", "call_count": 45230},
+		{"source": "user-service", "target": "id_card", "field_name": "id_card", "call_count": 1200},
+		{"source": "order-service", "target": "phone", "field_name": "phone", "call_count": 28720},
+	}
 	c.JSON(200, gin.H{
-		"nodes": []interface{}{},
-		"edges": []interface{}{},
+		"nodes": nodes,
+		"edges": edges,
 	})
+}
+
+func countBySensitivity(assets []service.Asset, s string) int {
+	count := 0
+	for _, a := range assets {
+		if a.SensitivityHint == s {
+			count++
+		}
+	}
+	return count
+}
+
+func countByStatus(assets []service.Asset, s string) int {
+	count := 0
+	for _, a := range assets {
+		if a.Status == s {
+			count++
+		}
+	}
+	return count
+}
+
+func countByClaim(assets []service.Asset, s string) int {
+	count := 0
+	for _, a := range assets {
+		if a.ClaimStatus == s {
+			count++
+		}
+	}
+	return count
+}
+
+func countBySeverity(alerts []service.Alert, s string) int {
+	count := 0
+	for _, a := range alerts {
+		if a.Severity == s {
+			count++
+		}
+	}
+	return count
+}
+
+func countByAlertStatus(alerts []service.Alert, s string) int {
+	count := 0
+	for _, a := range alerts {
+		if a.Status == s {
+			count++
+		}
+	}
+	return count
 }

@@ -1,15 +1,19 @@
 import { useEffect, useState } from 'react'
 import { Table, Tag, Typography, Card, Progress, Space } from 'antd'
 import { CheckCircleFilled, WarningFilled, CloseCircleFilled } from '@ant-design/icons'
+import { agentService } from '../services/api'
 
 const { Text } = Typography
 
-export default function Agents() {
+interface Props {
+  onNavigate: (page: string, id?: string) => void
+}
+
+export default function Agents({ onNavigate }: Props) {
   const [agents, setAgents] = useState<any[]>([])
 
   useEffect(() => {
-    const { agentService } = require('../services/api')
-    setAgents(agentService.list())
+    agentService.list().then(setAgents)
   }, [])
 
   const onlineCount = agents.filter(a => a.status === 'online').length
@@ -78,13 +82,14 @@ export default function Agents() {
         </div>
       </Card>
 
-      <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>采集器列表</span>}>
+      <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>采集器列表（点击行查看详情）</span>}>
         <Table
           columns={columns}
           dataSource={agents}
           rowKey="agent_id"
           pagination={false}
           size="middle"
+          onRow={(record) => ({ onClick: () => onNavigate('agent-detail', record.agent_id), style: { cursor: 'pointer' } })}
         />
       </Card>
     </div>

@@ -1,17 +1,20 @@
 import { useEffect, useState } from 'react'
 import { Table, Tag, Button, Space, Typography, Card, Descriptions, Modal } from 'antd'
 import { CheckCircleOutlined, CloseCircleOutlined } from '@ant-design/icons'
-import { executeAlertAction } from '../services/api'
+import { executeAlertAction, alertService } from '../services/api'
 
 const { Title, Paragraph } = Typography
 
-export default function Alerts() {
+interface Props {
+  onNavigate: (page: string, id?: string) => void
+}
+
+export default function Alerts({ onNavigate }: Props) {
   const [alerts, setAlerts] = useState<any[]>([])
   const [selectedAlert, setSelectedAlert] = useState<any>(null)
 
   useEffect(() => {
-    const { alertService } = require('../services/api')
-    setAlerts(alertService.list())
+    alertService.list().then(setAlerts)
   }, [])
 
   const handleAction = (alertId: string, action: string) => {
@@ -39,7 +42,7 @@ export default function Alerts() {
       },
     },
     { title: '评分', dataIndex: 'risk_score', key: 'score', width: 80,
-      render: (s: number) => <span style={{ fontWeight: 600, color: s >= 80 ? '#F5222D' : s >= 60 ? '#FAAD14' : '#36CFC9' }}>{s}</span> },
+      render: (s: number) => <span style={{ fontWeight: 600, color: s >= 80 ? '#F5222D' : s >= 60 ? '#FAAD14' : '#36CFC9' }}>{s}</span>,
     },
     { title: '来源', dataIndex: 'source_requirement', key: 'source', width: 120 },
     {
@@ -54,7 +57,7 @@ export default function Alerts() {
       title: '操作', key: 'action', width: 200,
       render: (_: any, record: any) => (
         <Space>
-          <Button size="small" onClick={() => setSelectedAlert(record)}>详情</Button>
+          <Button size="small" onClick={() => onNavigate('alert-detail', record.alert_id)}>详情</Button>
           {record.status === 'open' && (
             <>
               <Button size="small" type="primary" danger onClick={() => handleAction(record.alert_id, 'ip_block')}>封禁</Button>
@@ -68,13 +71,14 @@ export default function Alerts() {
 
   return (
     <>
-      <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>威胁告警列表</span>}>
+      <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>威胁告警列表（点击行查看详情）</span>}>
         <Table
           columns={columns}
           dataSource={alerts}
           rowKey="alert_id"
           pagination={{ pageSize: 20 }}
           size="middle"
+          onRow={(record) => ({ onClick: () => onNavigate('alert-detail', record.alert_id), style: { cursor: 'pointer' } })}
         />
       </Card>
 

@@ -120,13 +120,13 @@ func DefaultConfig() *Config {
 				PollIntervalSec: 60,
 			},
 		},
-		ManagementConfig: ManagementConfig{
+		Management: ManagementConfig{
 			HeartbeatInterval:   10 * time.Second,
 			HeartbeatTimeout:    30 * time.Second,
 			ReconnectBackoffMax: 300 * time.Second,
 			UseTLS:              true,
 		},
-		KafkaConfig: KafkaConfig{
+		Kafka: KafkaConfig{
 			Brokers:          []string{"localhost:9092"},
 			Topic:            "raw-api-events",
 			BatchSize:        1000,
