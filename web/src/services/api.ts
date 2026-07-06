@@ -2,11 +2,23 @@ import ReactECharts from 'echarts-for-react'
 
 const API_BASE = '/api/v1'
 
+function getAuthHeaders(): Record<string, string> {
+  const token = localStorage.getItem('flowlens_token')
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+  return headers
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const resp = await fetch(`${API_BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: getAuthHeaders(),
     ...options,
   })
+  if (resp.status === 401) {
+    localStorage.removeItem('flowlens_token')
+    window.location.reload()
+    throw new Error('Unauthorized')
+  }
   if (!resp.ok) throw new Error(`API error: ${resp.status}`)
   return resp.json()
 }

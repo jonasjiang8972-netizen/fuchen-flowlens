@@ -15,6 +15,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/config"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/detector"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/health"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/mgmt"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/normalizer"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
@@ -76,6 +77,8 @@ func main() {
 	monitor := health.NewMonitor(cfg.Agent.ID, cfg.Management)
 	monitor.SetCollectMode(string(collectMode))
 
+	mgrClient := mgmt.NewClient(cfg.Management)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -86,6 +89,30 @@ func main() {
 	go monitor.Start(ctx)
 
 	go processEvents(ctx, coll, norm, monitor)
+
+	hostname, _ := os.Hostname()
+	go func() {
+		mgrClient.Register(ctx, &mgmt.AgentRegistration{
+			AgentID:      cfg.Agent.ID,
+			Hostname:     hostname,
+			CollectMode:  string(collectMode),
+			Cluster:      cfg.Agent.Cluster,
+			AgentVersion: version.AgentVersion,
+			OS:           env.OS,
+		})
+	}()
+
+	go mgrClient.StartHeartbeatLoop(ctx, cfg.Management, func() mgmt.HeartbeatPayload {
+		met := monitor.GetMetrics()
+		return mgmt.HeartbeatPayload{
+			Status:      monitor.GetStatus(),
+			QPS:         met.QPS,
+			CPUPercent:  met.CPUPercent,
+			MemoryMB:    met.MemoryMB,
+			DropRate:    met.DropRate,
+			CollectMode: string(collectMode),
+		}
+	})
 
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)

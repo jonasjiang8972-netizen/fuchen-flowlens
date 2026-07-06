@@ -11,15 +11,18 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/auth"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/middleware"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/server"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/server"
 )
 
 func main() {
 	var (
-		port    int
-		debug   bool
+		port  int
+		debug bool
 	)
 	flag.IntVar(&port, "port", 8080, "http server port")
 	flag.BoolVar(&debug, "debug", false, "enable debug mode")
@@ -38,17 +41,24 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	store := storage.NewStore("mem")
+	srv := server.NewPlatformServer(store)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.StartEngines(ctx)
+
 	log.Infof("Starting %s Platform v%s on port %d", version.Name, version.Version, port)
 
-	router := setupRouter()
+	router := setupRouter(srv, store)
 
-	srv := &http.Server{
+	httpSrv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
 		Handler: router,
 	}
 
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)
 		}
 	}()
@@ -58,32 +68,54 @@ func main() {
 	sig := <-sigCh
 	log.Infof("Received signal %v, shutting down...", sig)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Errorf("Server forced shutdown: %v", err)
 	}
 	log.Info("Server stopped gracefully")
 }
 
-func setupRouter() *gin.Engine {
+func setupRouter(srv *server.PlatformServer, store storage.Store) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(corsMiddleware())
 
-	api := r.Group("/api/v1")
+	public := r.Group("/api/v1")
 	{
-		api.GET("/health", server.HealthHandler)
-		api.GET("/agents", server.ListAgentsHandler)
-		api.GET("/agents/:id", server.GetAgentHandler)
-		api.GET("/agents/health/summary", server.AgentHealthSummaryHandler)
-		api.GET("/assets", server.ListAssetsHandler)
-		api.GET("/assets/:id", server.GetAssetHandler)
-		api.POST("/assets/:id/claim", server.ClaimAssetHandler)
-		api.GET("/alerts", server.ListAlertsHandler)
-		api.GET("/alerts/:id", server.GetAlertHandler)
-		api.POST("/alerts/:id/:action", server.AlertActionHandler)
-		api.GET("/sensitive/flow-map", server.FlowMapHandler)
+		public.GET("/health", srv.HealthHandler)
+		public.POST("/auth/login", srv.LoginHandler)
+	}
+
+	authGroup := r.Group("/api/v1")
+	authGroup.Use(auth.AuthMiddleware())
+	authGroup.Use(middleware.AuditMiddleware(store))
+	{
+		authGroup.GET("/agents", srv.ListAgentsHandler)
+		authGroup.GET("/agents/:id", srv.GetAgentHandler)
+		authGroup.GET("/agents/health/summary", srv.AgentHealthSummaryHandler)
+		authGroup.POST("/agents/register", srv.RegisterAgentHandler)
+		authGroup.POST("/agents/:id/heartbeat", srv.HeartbeatHandler)
+
+		authGroup.GET("/assets", srv.ListAssetsHandler)
+		authGroup.GET("/assets/:id", srv.GetAssetHandler)
+		authGroup.POST("/assets/:id/claim", srv.ClaimAssetHandler)
+
+		authGroup.GET("/alerts", srv.ListAlertsHandler)
+		authGroup.GET("/alerts/:id", srv.GetAlertHandler)
+		authGroup.POST("/alerts/:id/:action", srv.AlertActionHandler)
+
+		authGroup.GET("/sensitive/flow-map", srv.FlowMapHandler)
+
+		authGroup.POST("/detect/access", srv.RecordAccessHandler)
+		authGroup.GET("/detect/events", srv.ListDetectionEventsHandler)
+
+		admin := authGroup.Group("")
+		admin.Use(auth.RoleMiddleware("super_admin", "security_admin", "auditor"))
+		{
+			admin.GET("/audit-logs", srv.ListAuditLogsHandler)
+		}
 	}
 
 	return r
