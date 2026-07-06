@@ -23,9 +23,11 @@ func main() {
 	var (
 		port  int
 		debug bool
+		demo  bool
 	)
 	flag.IntVar(&port, "port", 8080, "http server port")
 	flag.BoolVar(&debug, "debug", false, "enable debug mode")
+	flag.BoolVar(&demo, "demo", false, "demo mode: disable auth, use seed data only")
 	flag.Parse()
 
 	if err := logger.Init(debug); err != nil {
@@ -43,14 +45,18 @@ func main() {
 
 	store := storage.NewStore("mem")
 	srv := server.NewPlatformServer(store)
+	srv.DemoMode = demo
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	srv.StartEngines(ctx)
 
 	log.Infof("Starting %s Platform v%s on port %d", version.Name, version.Version, port)
+	if demo {
+		log.Warn("Running in DEMO mode — authentication disabled")
+	}
 
-	router := setupRouter(srv, store)
+	router := setupRouter(srv, store, demo)
 
 	httpSrv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -77,7 +83,7 @@ func main() {
 	log.Info("Server stopped gracefully")
 }
 
-func setupRouter(srv *server.PlatformServer, store storage.Store) *gin.Engine {
+func setupRouter(srv *server.PlatformServer, store storage.Store, demo bool) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(corsMiddleware())
@@ -88,35 +94,52 @@ func setupRouter(srv *server.PlatformServer, store storage.Store) *gin.Engine {
 		public.POST("/auth/login", srv.LoginHandler)
 	}
 
-	authGroup := r.Group("/api/v1")
-	authGroup.Use(auth.AuthMiddleware())
-	authGroup.Use(middleware.AuditMiddleware(store))
-	{
-		authGroup.GET("/agents", srv.ListAgentsHandler)
-		authGroup.GET("/agents/:id", srv.GetAgentHandler)
-		authGroup.GET("/agents/health/summary", srv.AgentHealthSummaryHandler)
-		authGroup.POST("/agents/register", srv.RegisterAgentHandler)
-		authGroup.POST("/agents/:id/heartbeat", srv.HeartbeatHandler)
-
-		authGroup.GET("/assets", srv.ListAssetsHandler)
-		authGroup.GET("/assets/:id", srv.GetAssetHandler)
-		authGroup.POST("/assets/:id/claim", srv.ClaimAssetHandler)
-
-		authGroup.GET("/alerts", srv.ListAlertsHandler)
-		authGroup.GET("/alerts/:id", srv.GetAlertHandler)
-		authGroup.POST("/alerts/:id/:action", srv.AlertActionHandler)
-
-		authGroup.GET("/sensitive/flow-map", srv.FlowMapHandler)
-
-		authGroup.POST("/detect/access", srv.RecordAccessHandler)
-		authGroup.GET("/detect/events", srv.ListDetectionEventsHandler)
-
-		admin := authGroup.Group("")
-		admin.Use(auth.RoleMiddleware("super_admin", "security_admin", "auditor"))
-		{
-			admin.GET("/audit-logs", srv.ListAuditLogsHandler)
-		}
+	var rg *gin.RouterGroup
+	if demo {
+		rg = r.Group("/api/v1")
+	} else {
+		rg = r.Group("/api/v1")
+		rg.Use(auth.AuthMiddleware())
+		rg.Use(middleware.AuditMiddleware(store))
 	}
+
+	// Agent management
+	rg.GET("/agents", srv.ListAgentsHandler)
+	rg.GET("/agents/:id", srv.GetAgentHandler)
+	rg.GET("/agents/health/summary", srv.AgentHealthSummaryHandler)
+	rg.POST("/agents/register", srv.RegisterAgentHandler)
+	rg.POST("/agents/:id/heartbeat", srv.HeartbeatHandler)
+
+	// Assets
+	rg.GET("/assets", srv.ListAssetsHandler)
+	rg.GET("/assets/:id", srv.GetAssetHandler)
+	rg.POST("/assets/:id/claim", srv.ClaimAssetHandler)
+
+	// Alerts
+	rg.GET("/alerts", srv.ListAlertsHandler)
+	rg.GET("/alerts/:id", srv.GetAlertHandler)
+	rg.POST("/alerts/:id/:action", srv.AlertActionHandler)
+
+	// Detection
+	rg.POST("/detect/access", srv.RecordAccessHandler)
+	rg.GET("/detect/events", srv.ListDetectionEventsHandler)
+
+	// Rules (可见/可知/可控/可优化)
+	rg.GET("/rules", srv.ListRulesHandler)
+	rg.GET("/rules/categories", srv.ListRuleCategoriesHandler)
+	rg.GET("/rules/:id", srv.GetRuleHandler)
+	rg.PUT("/rules/:id", srv.UpdateRuleHandler)
+	rg.POST("/rules/:id/hit", srv.HitRuleHandler)
+
+	// Sensitive data
+	rg.GET("/sensitive/flow-map", srv.FlowMapHandler)
+
+	// Audit & Admin
+	admin := rg.Group("")
+	if !demo {
+		admin.Use(auth.RoleMiddleware("super_admin", "security_admin", "auditor"))
+	}
+	admin.GET("/audit-logs", srv.ListAuditLogsHandler)
 
 	return r
 }

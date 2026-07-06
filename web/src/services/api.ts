@@ -132,7 +132,54 @@ export const executeAlertAction = async (alertId: string, action: string) => {
   }
 }
 
+// ─── Rule Service ──────────────────────────────────────────────
+
+export const ruleService = {
+  list: async () => {
+    try {
+      const data = await request<{ items: any[] }>('/rules')
+      return data.items
+    } catch {
+      return generateMockRules()
+    }
+  },
+  categories: async () => {
+    try {
+      const data = await request<{ items: string[] }>('/rules/categories')
+      return data.items
+    } catch {
+      return ['越权访问', '身份安全', '数据安全', '业务风控', '可用性', '注入攻击', '配置错误']
+    }
+  },
+  detail: async (id: string) => {
+    try {
+      return await request<any>(`/rules/${id}`)
+    } catch {
+      return { rule_id: id, name: '', params: [] }
+    }
+  },
+  update: async (id: string, body: any) => {
+    try {
+      return await request<any>(`/rules/${id}`, { method: 'PUT', body: JSON.stringify(body) })
+    } catch {
+      return { status: 'ok' }
+    }
+  },
+}
+
 // ─── Mock Data Fallback ─────────────────────────────────────────
+
+function generateMockRules() {
+  return [
+    { rule_id: 'R-BOLA-001', source_requirement: 'FR-DET-001', name: 'BOLA 对象遍历检测', category: '越权访问', severity: 'high', enabled: true, default_risk_score: 80, hit_count: 23, description: '检测账号在短时间高频访问不同对象ID的行为。', recommendation: '建议对该账号实施限流或临时封禁。', params: [{ key: 'traverse_threshold', label: '遍历阈值', type: 'int', default_value: 20, min: 5, max: 500, unit: '个', description: '5分钟内不同对象ID数量超过此值触发告警' }, { key: 'rate_threshold', label: '速率阈值', type: 'float', default_value: 2.0, min: 0.5, max: 100, description: '遍历速率超过此值加重评分' }] },
+    { rule_id: 'R-AUTH-001', source_requirement: 'FR-DET-002', name: '认证失效检测', category: '身份安全', severity: 'critical', enabled: true, default_risk_score: 90, hit_count: 7, description: '检测单 IP 短时间多重账号登录失败行为。', recommendation: '建议对该 IP 实施临时封禁。', params: [{ key: 'fail_count', label: '失败次数阈值', type: 'int', default_value: 30, min: 5, max: 500, description: '时间窗口内失败次数超过此值触发' }, { key: 'unique_accounts', label: '不同账号数', type: 'int', default_value: 10, min: 2, max: 200, description: '涉及不同账号数超过此值加重' }] },
+    { rule_id: 'R-BFLA-001', source_requirement: 'FR-DET-005', name: 'BFLA 越权操作检测', category: '越权访问', severity: 'high', enabled: true, default_risk_score: 75, hit_count: 5, description: '检测低权限账号访问管理端点或执行高权限操作。', recommendation: '检查该账号的角色配置是否正确。', params: [{ key: 'admin_endpoints', label: '管理端点列表', type: 'string', default_value: '/admin,/api/v1/admin', description: '逗号分隔的管理端点前缀' }, { key: 'strict_mode', label: '严格模式', type: 'bool', default_value: false, description: '开启后所有未经历史访问的管理端点请求即告警' }] },
+    { rule_id: 'R-DLP-001', source_requirement: 'FR-DLP-001', name: '敏感数据检测', category: '数据安全', severity: 'high', enabled: true, default_risk_score: 70, hit_count: 0, description: '自动识别响应体中的敏感数据。', recommendation: '检查该接口返回的敏感字段是否必须。', params: [{ key: 'id_card', label: '身份证检测', type: 'bool', default_value: true, description: '启用身份证号正则+校验位检测' }, { key: 'phone', label: '手机号检测', type: 'bool', default_value: true, description: '启用手机号检测' }] },
+    { rule_id: 'R-BOT-001', source_requirement: 'FR-RISK-002', name: '爬虫行为检测', category: '业务风控', severity: 'medium', enabled: false, default_risk_score: 50, hit_count: 0, description: '基于设备指纹、请求间隔规律识别自动化爬虫。', recommendation: '对该设备指纹实施验证码挑战或限流。', params: [{ key: 'interval_variance', label: '请求间隔方差阈值', type: 'float', default_value: 0.1, min: 0.01, max: 1.0, description: '请求间隔标准差小于此值判定为脚本' }, { key: 'burst_threshold', label: '短时爆发阈值', type: 'int', default_value: 100, min: 10, max: 1000, description: '1分钟内请求超过此值触发' }] },
+    { rule_id: 'R-RATE-001', source_requirement: 'FR-DET-004', name: '资源消耗异常检测', category: '可用性', severity: 'medium', enabled: false, default_risk_score: 50, hit_count: 0, description: '检测接口 QPS 超出历史基线的异常流量。', recommendation: '对该来源实施限流策略。', params: [{ key: 'multiplier', label: '基线倍数阈值', type: 'float', default_value: 5.0, min: 1.5, max: 100, description: '当前QPS超历史基线N倍时触发' }, { key: 'min_qps', label: '最低QPS门槛', type: 'int', default_value: 500, min: 10, max: 100000, description: '低于此QPS不检测' }] },
+    { rule_id: 'R-SSRF-001', source_requirement: 'FR-DET-007', name: 'SSRF 检测', category: '注入攻击', severity: 'high', enabled: true, default_risk_score: 65, hit_count: 0, description: '检测请求参数中包含内网地址等SSRF特征。', recommendation: '检查该接口是否需要对用户输入做URL白名单校验。', params: [{ key: 'internal_nets', label: '内网IP段', type: 'string', default_value: '10.0.0.0/8,192.168.0.0/16', description: '匹配到这些网段的请求参数触发告警' }] },
+  ]
+}
 
 function generateMockAgents() {
   const now = new Date()

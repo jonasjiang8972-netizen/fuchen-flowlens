@@ -12,6 +12,7 @@ import Alerts from './pages/Alerts'
 import AlertDetail from './pages/AlertDetail'
 import Agents from './pages/Agents'
 import AgentDetail from './pages/AgentDetail'
+import Rules from './pages/Rules'
 import DataGovernance from './pages/DataGovernance/DataGovernance'
 import RiskOps from './pages/RiskOps/RiskOps'
 import Settings from './pages/Settings/Settings'
@@ -21,12 +22,13 @@ const Header = Layout.Header
 const Content = Layout.Content
 
 type PageKey = 'dashboard' | 'assets' | 'asset-detail' | 'threats' | 'alert-detail'
-  | 'agents' | 'agent-detail' | 'data-gov' | 'risk-ops' | 'settings'
+  | 'agents' | 'agent-detail' | 'data-gov' | 'risk-ops' | 'settings' | 'rules'
 
 const menuItems = [
   { key: 'dashboard',  icon: <IconDashboard />,  label: '总览大屏' },
   { key: 'assets',     icon: <IconApps />,       label: '资产中心' },
   { key: 'threats',    icon: <IconSafe />,       label: '威胁检测' },
+  { key: 'rules',      icon: <IconEye />,        label: '检测规则' },
   { key: 'data-gov',   icon: <IconSend />,       label: '敏感数据治理' },
   { key: 'agents',     icon: <IconCloud />,      label: '采集器管理' },
   { key: 'risk-ops',   icon: <IconStop />,       label: '风控告警中心' },
@@ -75,6 +77,7 @@ export default function App() {
       case 'agent-detail': return <AgentDetail agentId={detailId} onBack={() => navigateTo('agents')} onNavigate={navigateTo} />
       case 'data-gov':     return <DataGovernance onNavigate={navigateTo} />
       case 'risk-ops':     return <RiskOps onNavigate={navigateTo} />
+      case 'rules':        return <Rules onNavigate={navigateTo} />
       case 'settings':     return <Settings onNavigate={navigateTo} />
       default:             return <Dashboard onNavigate={navigateTo} />
     }

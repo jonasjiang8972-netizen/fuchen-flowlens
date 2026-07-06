@@ -19,9 +19,11 @@ type PlatformServer struct {
 	agentService  *service.AgentService
 	assetService  *service.AssetService
 	alertService  *service.AlertService
+	ruleService   *service.RuleService
 	bolaEngine    *engine.BOLAEngine
 	authEngine    *engine.AuthFailureEngine
 	bflaEngine    *engine.BFLAEngine
+	DemoMode      bool
 }
 
 func NewPlatformServer(store storage.Store) *PlatformServer {
@@ -30,6 +32,7 @@ func NewPlatformServer(store storage.Store) *PlatformServer {
 		agentService: service.NewAgentService(),
 		assetService: service.NewAssetService(),
 		alertService: service.NewAlertService(),
+		ruleService:  service.NewRuleService(),
 		bolaEngine:   engine.NewBOLAEngine(store),
 		authEngine:   engine.NewAuthFailureEngine(store),
 		bflaEngine:   engine.NewBFLAEngine(store),
@@ -299,6 +302,80 @@ func (s *PlatformServer) ListDetectionEventsHandler(c *gin.Context) {
 		"total": len(events),
 		"items": events,
 	})
+}
+
+// ─── Rules Management ────────────────────────────────────────
+
+func (s *PlatformServer) ListRulesHandler(c *gin.Context) {
+	category := c.Query("category")
+	var rules []service.Rule
+	if category != "" {
+		rules = s.ruleService.ListByCategory(category)
+	} else {
+		rules = s.ruleService.List()
+	}
+	c.JSON(200, gin.H{
+		"total": len(rules),
+		"items": rules,
+	})
+}
+
+func (s *PlatformServer) GetRuleHandler(c *gin.Context) {
+	id := c.Param("id")
+	rule, err := s.ruleService.Get(id)
+	if err != nil {
+		c.JSON(404, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, rule)
+}
+
+func (s *PlatformServer) UpdateRuleHandler(c *gin.Context) {
+	id := c.Param("id")
+	var req struct {
+		Enabled *bool                     `json:"enabled"`
+		Config  map[string]interface{}    `json:"config"`
+		Params  []service.RuleParam       `json:"params"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Enabled != nil {
+		rule, err := s.ruleService.UpdateEnabled(id, *req.Enabled)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, rule)
+		return
+	}
+
+	if req.Config != nil || req.Params != nil {
+		rule, err := s.ruleService.UpdateConfig(id, req.Config, req.Params)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, rule)
+		return
+	}
+
+	c.JSON(400, gin.H{"error": "no update fields provided"})
+}
+
+func (s *PlatformServer) HitRuleHandler(c *gin.Context) {
+	id := c.Param("id")
+	s.ruleService.IncrementHit(id)
+	c.JSON(200, gin.H{"status": "ok"})
+}
+
+// ─── Categories ────────────────────────────────────────────────
+
+func (s *PlatformServer) ListRuleCategoriesHandler(c *gin.Context) {
+	categories := []string{"越权访问", "身份安全", "数据安全", "业务风控", "可用性", "注入攻击", "配置错误"}
+	c.JSON(200, gin.H{"items": categories})
 }
 
 // ─── Audit Logs ────────────────────────────────────────────────
