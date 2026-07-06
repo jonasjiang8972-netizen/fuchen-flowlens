@@ -1,12 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Layout, Menu, Typography, Breadcrumb } from 'antd'
+import { Layout, Menu, Breadcrumb, Notification, Button } from '@arco-design/web-react'
 import {
-  DashboardOutlined,
-  ApiOutlined,
-  AlertOutlined,
-  CloudServerOutlined,
-  SafetyOutlined,
-} from '@ant-design/icons'
+  IconDashboard, IconApps, IconSafe, IconSettings, IconCloud,
+  IconUser, IconSend, IconEye, IconStop,
+} from '@arco-design/web-react/icon'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Assets from './pages/Assets'
@@ -15,17 +12,25 @@ import Alerts from './pages/Alerts'
 import AlertDetail from './pages/AlertDetail'
 import Agents from './pages/Agents'
 import AgentDetail from './pages/AgentDetail'
+import DataGovernance from './pages/DataGovernance/DataGovernance'
+import RiskOps from './pages/RiskOps/RiskOps'
+import Settings from './pages/Settings/Settings'
 
-const { Header, Sider, Content } = Layout
-const { Title } = Typography
+const Sider = Layout.Sider
+const Header = Layout.Header
+const Content = Layout.Content
 
-type PageKey = 'dashboard' | 'assets' | 'asset-detail' | 'alerts' | 'alert-detail' | 'agents' | 'agent-detail'
+type PageKey = 'dashboard' | 'assets' | 'asset-detail' | 'threats' | 'alert-detail'
+  | 'agents' | 'agent-detail' | 'data-gov' | 'risk-ops' | 'settings'
 
 const menuItems = [
-  { key: 'dashboard', icon: <DashboardOutlined />, label: '总览大屏' },
-  { key: 'assets', icon: <ApiOutlined />, label: '资产中心' },
-  { key: 'alerts', icon: <AlertOutlined />, label: '威胁检测' },
-  { key: 'agents', icon: <CloudServerOutlined />, label: '采集器管理' },
+  { key: 'dashboard',  icon: <IconDashboard />,  label: '总览大屏' },
+  { key: 'assets',     icon: <IconApps />,       label: '资产中心' },
+  { key: 'threats',    icon: <IconSafe />,       label: '威胁检测' },
+  { key: 'data-gov',   icon: <IconSend />,       label: '敏感数据治理' },
+  { key: 'agents',     icon: <IconCloud />,      label: '采集器管理' },
+  { key: 'risk-ops',   icon: <IconStop />,       label: '风控告警中心' },
+  { key: 'settings',   icon: <IconSettings />,   label: '系统管理' },
 ]
 
 export default function App() {
@@ -35,6 +40,7 @@ export default function App() {
   const [role, setRole] = useState('')
   const [activePage, setActivePage] = useState<PageKey>('dashboard')
   const [detailId, setDetailId] = useState('')
+  const [collapsed, setCollapsed] = useState(false)
 
   useEffect(() => {
     const savedToken = localStorage.getItem('flowlens_token')
@@ -47,18 +53,10 @@ export default function App() {
   }, [])
 
   const handleLogin = (newToken: string, newUser: string, newRole: string) => {
-    setToken(newToken)
-    setUser(newUser)
-    setRole(newRole)
-    setAuthenticated(true)
+    setToken(newToken); setUser(newUser); setRole(newRole); setAuthenticated(true)
   }
-
   const handleLogout = () => {
-    localStorage.removeItem('flowlens_token')
-    localStorage.removeItem('flowlens_user')
-    localStorage.removeItem('flowlens_role')
-    setAuthenticated(false)
-    setToken('')
+    localStorage.clear(); setAuthenticated(false); setToken('')
   }
 
   const navigateTo = (page: PageKey, id?: string) => {
@@ -68,65 +66,73 @@ export default function App() {
 
   const renderPage = () => {
     switch (activePage) {
-      case 'dashboard': return <Dashboard onNavigate={navigateTo} />
-      case 'assets': return <Assets onNavigate={navigateTo} />
+      case 'dashboard':    return <Dashboard onNavigate={navigateTo} />
+      case 'assets':       return <Assets onNavigate={navigateTo} />
       case 'asset-detail': return <AssetDetail assetId={detailId} onBack={() => navigateTo('assets')} onNavigate={navigateTo} />
-      case 'alerts': return <Alerts onNavigate={navigateTo} />
-      case 'alert-detail': return <AlertDetail alertId={detailId} onBack={() => navigateTo('alerts')} onNavigate={navigateTo} />
-      case 'agents': return <Agents onNavigate={navigateTo} />
+      case 'threats':      return <Alerts onNavigate={navigateTo} />
+      case 'alert-detail': return <AlertDetail alertId={detailId} onBack={() => navigateTo('threats')} onNavigate={navigateTo} />
+      case 'agents':       return <Agents onNavigate={navigateTo} />
       case 'agent-detail': return <AgentDetail agentId={detailId} onBack={() => navigateTo('agents')} onNavigate={navigateTo} />
-      default: return <Dashboard onNavigate={navigateTo} />
+      case 'data-gov':     return <DataGovernance onNavigate={navigateTo} />
+      case 'risk-ops':     return <RiskOps onNavigate={navigateTo} />
+      case 'settings':     return <Settings onNavigate={navigateTo} />
+      default:             return <Dashboard onNavigate={navigateTo} />
     }
   }
 
-  if (!authenticated) {
-    return <Login onLogin={handleLogin} />
-  }
+  if (!authenticated) return <Login onLogin={handleLogin} />
 
   const getBreadcrumb = () => {
-    const items: { title: string; onClick?: () => void }[] = []
     const labelMap: Record<string, string> = {
-      dashboard: '总览大屏', assets: '资产中心', alerts: '威胁检测', agents: '采集器管理',
+      dashboard: '总览大屏', assets: '资产中心', threats: '威胁检测', 'data-gov': '敏感数据治理',
+      agents: '采集器管理', 'risk-ops': '风控告警中心', settings: '系统管理',
       'asset-detail': '资产详情', 'alert-detail': '告警详情', 'agent-detail': '采集器详情',
     }
+    const items: any[] = []
     if (activePage.includes('detail')) {
       const parent = activePage.replace('-detail', '') as PageKey
-      items.push({ title: labelMap[parent] || '', onClick: () => navigateTo(parent) })
-      items.push({ title: `${labelMap[activePage] || ''} (${detailId})` })
+      items.push({ title: <a onClick={() => navigateTo(parent)}>{labelMap[parent]}</a> })
+      items.push({ title: `${labelMap[activePage]} (${detailId})` })
     } else {
-      items.push({ title: labelMap[activePage] || '' })
+      items.push({ title: labelMap[activePage] || activePage })
     }
     return items
   }
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Sider width={220} style={{ background: '#0A1929', borderRight: '1px solid #1E3A5F' }}>
-        <div style={{ padding: '20px 16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <SafetyOutlined style={{ fontSize: '28px', color: '#36CFC9' }} />
-          <div>
-            <Title level={5} style={{ color: '#F0F4F8', margin: 0, fontSize: '16px' }}>拂尘 FlowLens</Title>
-          </div>
+    <Layout style={{ minHeight: '100vh', background: 'var(--color-bg-canvas)' }}>
+      <Sider collapsed={collapsed} onCollapse={setCollapsed} collapsible
+        style={{ background: 'var(--color-bg-canvas)', borderRight: '1px solid var(--color-border-hairline)' }}>
+        <div style={{ padding: '20px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <IconEye style={{ fontSize: 26, color: 'var(--color-brand-primary)' }} />
+          {!collapsed && <span style={{ color: 'var(--color-text-primary)', fontWeight: 600, fontSize: 16 }}>FlowLens</span>}
         </div>
-        <Menu theme="dark" mode="inline"
+        <Menu theme="dark"
           selectedKeys={[activePage.includes('detail') ? activePage.replace('-detail', '') : activePage]}
           style={{ background: 'transparent', border: 'none' }}
-          items={menuItems}
-          onClick={({ key }) => navigateTo(key as PageKey)}
-        />
-        <div style={{ position: 'absolute', bottom: 20, left: 16, right: 16, padding: '12px', borderTop: '1px solid #1E3A5F' }}>
-          <div style={{ color: '#94A3B8', fontSize: 12 }}>{user}</div>
-          <div style={{ color: '#36CFC9', fontSize: 12, cursor: 'pointer' }} onClick={handleLogout}>退出登录</div>
+          onClick={(key) => navigateTo(key as PageKey)}
+        >
+          {menuItems.map(m => (
+            <Menu.Item key={m.key}>
+              {m.icon}<span style={{ marginLeft: 10 }}>{m.label}</span>
+            </Menu.Item>
+          ))}
+        </Menu>
+        <div style={{ position: 'absolute', bottom: 16, left: 16, right: 16, padding: '12px 0', borderTop: '1px solid var(--color-border-hairline)' }}>
+          {!collapsed && (
+            <>
+              <div style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>{user}</div>
+              <div style={{ color: 'var(--color-brand-primary)', fontSize: 12, cursor: 'pointer' }} onClick={handleLogout}>退出</div>
+            </>
+          )}
         </div>
       </Sider>
       <Layout>
-        <Header style={{ background: '#0A1929', borderBottom: '1px solid #1E3A5F', padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <Breadcrumb items={getBreadcrumb()} style={{ margin: 0 }}
-            itemRender={(item) => item.onClick ? <a onClick={item.onClick} style={{ color: '#36CFC9' }}>{item.title}</a> : <span style={{ color: '#F0F4F8' }}>{item.title}</span>}
-          />
-          <span style={{ color: '#94A3B8', fontSize: '13px' }}>v0.3.0 · {role}</span>
+        <Header style={{ background: 'var(--color-bg-canvas)', borderBottom: '1px solid var(--color-border-hairline)', padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 52 }}>
+          <Breadcrumb routes={getBreadcrumb()} style={{ background: 'transparent' }} />
+          <span style={{ color: 'var(--color-text-secondary)', fontSize: 12 }}>v0.4.0 · {role}</span>
         </Header>
-        <Content style={{ padding: '24px', background: '#050B14' }}>
+        <Content style={{ padding: 20, background: 'var(--color-bg-canvas)' }}>
           {renderPage()}
         </Content>
       </Layout>
