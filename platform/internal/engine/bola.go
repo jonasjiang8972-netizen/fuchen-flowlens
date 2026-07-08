@@ -19,10 +19,16 @@ type BOLAEngine struct {
 type AccountBaseline struct {
 	AccountID     string
 	ObjectIDs     map[string]int
+	WindowAccess  []ObjectAccess
 	LastAccess    time.Time
 	TraverseRate  float64
 	TotalAccesses int
 	AvgIntervalMs float64
+}
+
+type ObjectAccess struct {
+	ObjectID string
+	At       time.Time
 }
 
 func NewBOLAEngine(store storage.Store) *BOLAEngine {
@@ -48,6 +54,7 @@ func (e *BOLAEngine) Evaluate(accountID, objectID, endpoint, sourceIP string) (i
 	now := time.Now()
 	baseline.TotalAccesses++
 	baseline.ObjectIDs[objectID]++
+	baseline.WindowAccess = append(baseline.WindowAccess, ObjectAccess{ObjectID: objectID, At: now})
 	interval := now.Sub(baseline.LastAccess).Milliseconds()
 	if baseline.LastAccess.IsZero() {
 		interval = 1000
@@ -56,21 +63,34 @@ func (e *BOLAEngine) Evaluate(accountID, objectID, endpoint, sourceIP string) (i
 	baseline.AvgIntervalMs = (baseline.AvgIntervalMs*float64(baseline.TotalAccesses-1) + float64(interval)) / float64(baseline.TotalAccesses)
 	baseline.LastAccess = now
 
-	uniqueCount := len(baseline.ObjectIDs)
-	traverseRate := float64(uniqueCount) / float64(max(int(now.Sub(now.Add(-5*time.Minute)).Minutes()), 1))
+	windowStart := now.Add(-5 * time.Minute)
+	writeIdx := 0
+	windowObjects := make(map[string]bool)
+	for _, access := range baseline.WindowAccess {
+		if access.At.After(windowStart) {
+			baseline.WindowAccess[writeIdx] = access
+			writeIdx++
+			windowObjects[access.ObjectID] = true
+		}
+	}
+	baseline.WindowAccess = baseline.WindowAccess[:writeIdx]
+
+	uniqueCount := len(windowObjects)
+	traverseRate := float64(uniqueCount) / 5.0
+	baseline.TraverseRate = traverseRate
 
 	riskScore := 0
 	reason := ""
 
 	if uniqueCount > 50 && traverseRate > 5.0 {
 		riskScore = 80 + min(int((traverseRate-5.0)*2), 20)
-		reason = fmt.Sprintf("高遍历速率: %d 个唯一对象, %.1f/s", uniqueCount, traverseRate)
+		reason = fmt.Sprintf("高遍历速率: 5分钟内访问 %d 个唯一对象, %.1f/min", uniqueCount, traverseRate)
 	} else if uniqueCount > 20 && traverseRate > 2.0 {
 		riskScore = 60 + min(int((traverseRate-2.0)*5), 20)
-		reason = fmt.Sprintf("中等遍历: %d 个唯一对象, %.1f/s", uniqueCount, traverseRate)
-	} else if uniqueCount > 100 {
+		reason = fmt.Sprintf("中等遍历: 5分钟内访问 %d 个唯一对象, %.1f/min", uniqueCount, traverseRate)
+	} else if len(baseline.ObjectIDs) > 100 {
 		riskScore = 50
-		reason = fmt.Sprintf("大量对象访问: %d 个", uniqueCount)
+		reason = fmt.Sprintf("大量对象访问: 累计 %d 个对象", len(baseline.ObjectIDs))
 	}
 
 	if riskScore >= 70 {

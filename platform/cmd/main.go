@@ -121,6 +121,9 @@ func setupRouter(srv *server.PlatformServer, store storage.Store, demo bool) *gi
 	rg.POST("/alerts/:id/:action", srv.AlertActionHandler)
 
 	// Detection
+	rg.POST("/ingest/event", srv.IngestEventHandler)
+	rg.POST("/ingest/batch", srv.IngestBatchHandler)
+	rg.GET("/ingest/metrics", srv.IngestMetricsHandler)
 	rg.POST("/detect/access", srv.RecordAccessHandler)
 	rg.GET("/detect/events", srv.ListDetectionEventsHandler)
 

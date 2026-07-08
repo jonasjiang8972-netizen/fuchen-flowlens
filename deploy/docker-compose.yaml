@@ -83,8 +83,8 @@ services:
   # ============================================================
   platform:
     build:
-      context: ../platform
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: platform/Dockerfile
     ports:
       - "8080:8080"
     depends_on:

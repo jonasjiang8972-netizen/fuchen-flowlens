@@ -19,6 +19,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/normalizer"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
 )
 
 func main() {
@@ -88,7 +89,7 @@ func main() {
 
 	go monitor.Start(ctx)
 
-	go processEvents(ctx, coll, norm, monitor)
+	go processEvents(ctx, coll, norm, monitor, mgrClient, cfg.Agent.ID, cfg.Kafka.BatchSize, time.Duration(cfg.Kafka.FlushIntervalMs)*time.Millisecond)
 
 	hostname, _ := os.Hostname()
 	go func() {
@@ -164,22 +165,61 @@ func createCollector(mode detector.CollectMode) (collector.Collector, error) {
 	}
 }
 
-func processEvents(ctx context.Context, coll collector.Collector, norm *normalizer.Normalizer, mon *health.Monitor) {
+func processEvents(ctx context.Context, coll collector.Collector, norm *normalizer.Normalizer, mon *health.Monitor, mgr *mgmt.Client, agentID string, batchSize int, flushInterval time.Duration) {
 	log := logger.L()
 	events := coll.Events()
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	if flushInterval <= 0 {
+		flushInterval = 1 * time.Second
+	}
+	batch := make([]shared.APIEvent, 0, batchSize)
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+		out := make([]shared.APIEvent, len(batch))
+		copy(out, batch)
+		batch = batch[:0]
+		if err := mgr.SendEvents(ctx, out); err != nil {
+			log.Warnf("Failed to ingest %d events: %v", len(out), err)
+			mon.UpdateMetrics(func(m *health.Metrics) {
+				m.DropRate = 1
+			})
+			return
+		}
+		mon.UpdateMetrics(func(m *health.Metrics) {
+			m.DropRate = 0
+		})
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
+			flush()
 			return
+		case <-ticker.C:
+			flush()
 		case evt, ok := <-events:
 			if !ok {
 				log.Warn("Collector events channel closed")
+				flush()
 				return
 			}
 			normalized := norm.NormalizeEvent(evt)
 			if normalized.Application.PathNormalized == "" {
 				normalized.Application.PathNormalized = normalized.Application.PathRaw
+			}
+			if normalized.AgentID == "" {
+				normalized.AgentID = agentID
+			}
+			batch = append(batch, *normalized)
+			if len(batch) >= batchSize {
+				flush()
 			}
 		}
 	}

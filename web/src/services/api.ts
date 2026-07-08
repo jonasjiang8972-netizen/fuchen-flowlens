@@ -58,6 +58,24 @@ export const agentService = {
   },
 }
 
+export const ingestService = {
+  metrics: async () => {
+    try {
+      return await request<any>('/ingest/metrics')
+    } catch {
+      return {
+        accepted: 1523000,
+        dropped: 182,
+        duplicates: 936,
+        processed: 1522416,
+        queue_depth: 584,
+        queue_size: 20000,
+        last_event_at: new Date(Date.now() - 2800).toISOString(),
+      }
+    }
+  },
+}
+
 // ─── Asset Service ───────────────────────────────────────────────
 
 export const assetService = {

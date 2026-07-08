@@ -10,6 +10,7 @@ import (
 
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/config"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
 )
 
 type AgentRegistration struct {
@@ -101,6 +102,35 @@ func (c *Client) SendHeartbeat(ctx context.Context, hb *HeartbeatPayload) error 
 	if resp.StatusCode == 404 {
 		c.registered = false
 		return fmt.Errorf("agent not found on platform")
+	}
+	return nil
+}
+
+func (c *Client) SendEvents(ctx context.Context, events []shared.APIEvent) error {
+	if len(events) == 0 {
+		return nil
+	}
+	url := fmt.Sprintf("http://%s/api/v1/ingest/batch", c.cfg.PlatformEndpoint)
+	if c.cfg.UseTLS {
+		url = fmt.Sprintf("https://%s/api/v1/ingest/batch", c.cfg.PlatformEndpoint)
+	}
+	body, _ := json.Marshal(struct {
+		Events []shared.APIEvent `json:"events"`
+	}{Events: events})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create ingest request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("send events: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("ingest failed: %d", resp.StatusCode)
 	}
 	return nil
 }

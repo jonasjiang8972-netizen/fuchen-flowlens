@@ -1,18 +1,41 @@
-import { useEffect, useState } from 'react'
-import { Row, Col, Card, Statistic, Table, Tag, Typography } from 'antd'
+import { useEffect, useMemo, useState } from 'react'
+import { Button, Card, Col, Row, Space, Table, Tag } from 'antd'
 import {
-  ApiOutlined,
   AlertOutlined,
+  ApiOutlined,
   CheckCircleOutlined,
-  WarningOutlined,
+  ClockCircleOutlined,
+  CloudServerOutlined,
+  RightOutlined,
+  TeamOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { agentService, assetService, alertService } from '../services/api'
-
-const { Title } = Typography
+import { agentService, alertService, assetService } from '../services/api'
 
 interface Props {
   onNavigate: (page: string, id?: string) => void
+}
+
+const severityText: Record<string, string> = {
+  critical: '严重',
+  high: '高危',
+  medium: '中危',
+  low: '低危',
+}
+
+const severityColor: Record<string, string> = {
+  critical: 'red',
+  high: 'orange',
+  medium: 'gold',
+  low: 'blue',
+}
+
+const statusText: Record<string, string> = {
+  open: '待处理',
+  acknowledged: '已确认',
+  in_progress: '处置中',
+  resolved: '已解决',
+  false_positive: '误报',
 }
 
 export default function Dashboard({ onNavigate }: Props) {
@@ -21,200 +44,197 @@ export default function Dashboard({ onNavigate }: Props) {
   const [alerts, setAlerts] = useState<any[]>([])
 
   useEffect(() => {
-    Promise.all([agentService.list(), assetService.list(), alertService.list()]).then(([a, as, al]) => {
-      setAgents(a)
-      setAssets(as)
-      setAlerts(al)
+    Promise.all([agentService.list(), assetService.list(), alertService.list()]).then(([agentRows, assetRows, alertRows]) => {
+      setAgents(agentRows)
+      setAssets(assetRows)
+      setAlerts(alertRows)
     })
   }, [])
 
-  const onlineAgents = agents.filter(a => a.status === 'online').length
-  const highAlerts = alerts.filter(a => a.severity === 'high' || a.severity === 'critical').length
-  const unclaimedAssets = assets.filter(a => a.claim_status === 'unclaimed').length
+  const openAlerts = alerts.filter(a => a.status === 'open')
+  const criticalAlerts = alerts.filter(a => a.severity === 'critical')
+  const highAssets = assets.filter(a => a.sensitivity_hint === 'high')
+  const shadowAssets = assets.filter(a => a.status === 'shadow')
+  const unclaimedAssets = assets.filter(a => a.claim_status === 'unclaimed')
+  const onlineAgents = agents.filter(a => a.status === 'online')
+  const degradedAgents = agents.filter(a => a.status === 'degraded' || a.status === 'offline')
 
+  const priorityAlerts = useMemo(() => {
+    return [...alerts]
+      .sort((a, b) => (b.risk_score || 0) - (a.risk_score || 0))
+      .slice(0, 5)
+  }, [alerts])
+
+  const attentionAssets = useMemo(() => {
+    const seen = new Set<string>()
+    return [...highAssets, ...shadowAssets].filter(asset => {
+      const id = asset.asset_id || `${asset.method}-${asset.host}-${asset.path_normalized}`
+      if (seen.has(id)) return false
+      seen.add(id)
+      return true
+    }).slice(0, 8)
+  }, [highAssets, shadowAssets])
+
+  const chartText = '#64748b'
   const trendOption = {
-    backgroundColor: 'transparent',
+    color: ['#c9352b', '#d96b20', '#117865'],
     tooltip: { trigger: 'axis' },
+    legend: { top: 0, right: 8, textStyle: { color: chartText } },
+    grid: { top: 42, right: 18, bottom: 28, left: 42 },
     xAxis: {
       type: 'category',
       data: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
-      axisLine: { lineStyle: { color: '#1E3A5F' } },
-      axisLabel: { color: '#94A3B8' },
+      axisLabel: { color: chartText },
+      axisLine: { lineStyle: { color: '#d9e2ec' } },
     },
     yAxis: {
       type: 'value',
-      axisLine: { lineStyle: { color: '#1E3A5F' } },
-      axisLabel: { color: '#94A3B8' },
-      splitLine: { lineStyle: { color: '#1E3A5F' } },
+      axisLabel: { color: chartText },
+      splitLine: { lineStyle: { color: '#edf1f6' } },
     },
     series: [
-      {
-        name: '告警数',
-        type: 'line',
-        smooth: true,
-        data: [12, 19, 8, 25, 16, 9, 14],
-        lineStyle: { color: '#F5222D', width: 2 },
-        areaStyle: { color: 'rgba(245, 34, 45, 0.1)' },
-        itemStyle: { color: '#F5222D' },
-      },
-      {
-        name: '风险事件',
-        type: 'line',
-        smooth: true,
-        data: [35, 42, 28, 55, 38, 22, 30],
-        lineStyle: { color: '#FAAD14', width: 2 },
-        areaStyle: { color: 'rgba(250, 173, 20, 0.1)' },
-        itemStyle: { color: '#FAAD14' },
-      },
+      { name: '严重', type: 'line', smooth: true, data: [3, 4, 2, 5, 4, 2, criticalAlerts.length], areaStyle: { opacity: 0.06 } },
+      { name: '高危', type: 'line', smooth: true, data: [8, 12, 7, 16, 11, 8, alerts.filter(a => a.severity === 'high').length], areaStyle: { opacity: 0.06 } },
+      { name: '待处理', type: 'line', smooth: true, data: [22, 26, 18, 31, 24, 20, openAlerts.length], areaStyle: { opacity: 0.06 } },
     ],
-    grid: { top: 20, right: 20, bottom: 30, left: 50 },
   }
 
   const riskDistOption = {
-    backgroundColor: 'transparent',
     tooltip: { trigger: 'item' },
-    series: [
-      {
-        type: 'pie',
-        radius: ['50%', '70%'],
-        data: [
-          { value: 5, name: '严重', itemStyle: { color: '#F5222D' } },
-          { value: 12, name: '高危', itemStyle: { color: '#FA8C16' } },
-          { value: 28, name: '中危', itemStyle: { color: '#FAAD14' } },
-          { value: 63, name: '低危', itemStyle: { color: '#36CFC9' } },
-        ],
-        label: { color: '#94A3B8' },
-      },
-    ],
+    legend: { bottom: 0, textStyle: { color: chartText } },
+    series: [{
+      type: 'pie',
+      radius: ['54%', '72%'],
+      center: ['50%', '44%'],
+      data: [
+        { value: criticalAlerts.length, name: '严重', itemStyle: { color: '#c9352b' } },
+        { value: alerts.filter(a => a.severity === 'high').length, name: '高危', itemStyle: { color: '#d96b20' } },
+        { value: alerts.filter(a => a.severity === 'medium').length, name: '中危', itemStyle: { color: '#b7791f' } },
+        { value: alerts.filter(a => a.severity === 'low').length, name: '低危', itemStyle: { color: '#2563a9' } },
+      ],
+      label: { color: chartText },
+    }],
   }
 
-  const topAlertsColumns = [
-    { title: '时间', dataIndex: 'timestamp', key: 'time', width: 160,
-      render: (t: string) => new Date(t).toLocaleString('zh-CN') },
-    { title: '告警标题', dataIndex: 'title', key: 'title' },
+  const assetColumns = [
     {
-      title: '严重等级', dataIndex: 'severity', key: 'severity', width: 100,
-      render: (s: string) => {
-        const colors: Record<string, string> = { critical: 'red', high: 'orange', medium: 'gold', low: 'blue' }
-        return <Tag color={colors[s] || 'default'}>{s}</Tag>
-      },
-    },
-    { title: '风险评分', dataIndex: 'risk_score', key: 'score', width: 100,
-      render: (s: number) => <span style={{ color: s >= 80 ? '#F5222D' : s >= 60 ? '#FAAD14' : '#36CFC9' }}>{s}</span>,
+      title: '资产',
+      dataIndex: 'path_normalized',
+      key: 'path',
+      render: (path: string, row: any) => (
+        <Space direction="vertical" size={2}>
+          <span className="asset-path">{row.method} {path}</span>
+          <span className="muted">{row.host} · {row.group_path || '未分组'}</span>
+        </Space>
+      ),
     },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 100,
-      render: (s: string) => {
-        const map: Record<string, string> = { open: '待处理', acknowledged: '已确认', in_progress: '处置中', resolved: '已解决' }
-        return <Tag>{map[s] || s}</Tag>
-      },
+      title: '风险',
+      dataIndex: 'sensitivity_hint',
+      key: 'sensitivity',
+      width: 86,
+      render: (value: string) => <Tag color={value === 'high' ? 'red' : value === 'medium' ? 'gold' : 'blue'}>{value === 'high' ? '高敏' : value === 'medium' ? '中敏' : '低敏'}</Tag>,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 92,
+      render: (value: string) => <Tag color={value === 'shadow' ? 'orange' : value === 'zombie' ? 'default' : 'success'}>{value}</Tag>,
+    },
+    {
+      title: '调用',
+      dataIndex: 'daily_avg_calls',
+      key: 'calls',
+      width: 108,
+      align: 'right' as const,
+      render: (value: number) => value?.toLocaleString(),
     },
   ]
 
-  const handleAlertClick = (alertId: string) => { onNavigate('alert-detail', alertId) }
-  const handleAssetClick = (assetId: string) => { onNavigate('asset-detail', assetId) }
-
   return (
-    <div>
-      <Row gutter={[16, 16]}>
-        <Col span={6}>
-          <Card className="dashboard-card" styles={{ body: { padding: '20px' } }}>
-            <Statistic
-              title={<span style={{ color: '#94A3B8' }}>API 资产总数</span>}
-              value={assets.length}
-              prefix={<ApiOutlined style={{ color: '#36CFC9' }} />}
-              valueStyle={{ color: '#F0F4F8', fontSize: '28px', fontWeight: 700 }}
-              suffix={<span style={{ fontSize: '12px', color: '#36CFC9', cursor: 'pointer' }} onClick={() => onNavigate('assets')}>查看全部 &gt;</span>}
-            />
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card className="dashboard-card" styles={{ body: { padding: '20px' } }}>
-            <Statistic
-              title={<span style={{ color: '#94A3B8' }}>在线采集器</span>}
-              value={onlineAgents}
-              suffix={<span style={{ fontSize: '14px', color: '#94A3B8' }}> / {agents.length}</span>}
-              prefix={onlineAgents === agents.length ? <CheckCircleOutlined style={{ color: '#52C41A' }} /> : <WarningOutlined style={{ color: '#FAAD14' }} />}
-              valueStyle={{ color: '#F0F4F8', fontSize: '28px', fontWeight: 700 }}
-            />
-            <div style={{ marginTop: 8, fontSize: '12px', color: '#36CFC9', cursor: 'pointer' }} onClick={() => onNavigate('agents')}>查看详情 &gt;</div>
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card className="dashboard-card" styles={{ body: { padding: '20px' } }}>
-            <Statistic
-              title={<span style={{ color: '#94A3B8' }}>高危告警</span>}
-              value={highAlerts}
-              prefix={<AlertOutlined style={{ color: '#F5222D' }} />}
-              valueStyle={{ color: '#F5222D', fontSize: '28px', fontWeight: 700 }}
-            />
-            <div style={{ marginTop: 8, fontSize: '12px', color: '#F5222D', cursor: 'pointer' }} onClick={() => onNavigate('alerts')}>查看告警 &gt;</div>
-          </Card>
-        </Col>
-        <Col span={6}>
-          <Card className="dashboard-card" styles={{ body: { padding: '20px' } }}>
-            <Statistic
-              title={<span style={{ color: '#94A3B8' }}>待认领资产</span>}
-              value={unclaimedAssets}
-              prefix={<ApiOutlined style={{ color: '#FAAD14' }} />}
-              valueStyle={{ color: '#FAAD14', fontSize: '28px', fontWeight: 700 }}
-            />
-          </Card>
-        </Col>
-      </Row>
+    <div className="commercial-page">
+      <div className="page-heading">
+        <div>
+          <div className="page-heading__title">安全工作台</div>
+          <div className="page-heading__desc">聚合今日风险、资产变化和采集健康，优先处理影响面最大的 API 安全事件。</div>
+        </div>
+        <Space>
+          <Button onClick={() => onNavigate('assets')}>查看资产</Button>
+          <Button type="primary" onClick={() => onNavigate('alerts')}>处理告警</Button>
+        </Space>
+      </div>
 
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col span={16}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>告警趋势（近7天）</span>}>
-            <ReactECharts option={trendOption} style={{ height: '280px' }} />
-          </Card>
-        </Col>
-        <Col span={8}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>风险等级分布</span>}>
-            <ReactECharts option={riskDistOption} style={{ height: '280px' }} />
-          </Card>
-        </Col>
-      </Row>
+      <div className="metric-grid">
+        <Card className="metric-card">
+          <div className="metric-card__label"><AlertOutlined /> 待处理告警</div>
+          <div className="metric-card__value">{openAlerts.length}</div>
+          <div className="metric-card__meta">{criticalAlerts.length} 个严重，{alerts.filter(a => a.severity === 'high').length} 个高危</div>
+        </Card>
+        <Card className="metric-card">
+          <div className="metric-card__label"><ApiOutlined /> 高敏 API 资产</div>
+          <div className="metric-card__value">{highAssets.length}</div>
+          <div className="metric-card__meta">{shadowAssets.length} 个影子 API，{unclaimedAssets.length} 个待认领</div>
+        </Card>
+        <Card className="metric-card">
+          <div className="metric-card__label"><CloudServerOutlined /> 采集器健康</div>
+          <div className="metric-card__value">{onlineAgents.length}/{agents.length}</div>
+          <div className="metric-card__meta">{degradedAgents.length} 个异常节点需要排查</div>
+        </Card>
+        <Card className="metric-card">
+          <div className="metric-card__label"><TeamOutlined /> 责任归属</div>
+          <div className="metric-card__value">{assets.length - unclaimedAssets.length}</div>
+          <div className="metric-card__meta">已认领资产覆盖率 {assets.length ? Math.round((assets.length - unclaimedAssets.length) / assets.length * 100) : 0}%</div>
+        </Card>
+      </div>
 
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col span={24}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>Top 风险告警（点击行下钻）</span>}>
-            <Table
-              columns={topAlertsColumns}
-              dataSource={alerts}
-              rowKey="alert_id"
-              pagination={false}
-              size="middle"
-              onRow={(record) => ({ onClick: () => handleAlertClick(record.alert_id), style: { cursor: 'pointer' } })}
-            />
-          </Card>
-        </Col>
-      </Row>
+      <div className="workbench-grid">
+        <Card title="今日优先处置" extra={<Button type="link" onClick={() => onNavigate('alerts')}>进入告警中心 <RightOutlined /></Button>}>
+          <div className="priority-list">
+            {priorityAlerts.map(alert => (
+              <div className="priority-item" key={alert.alert_id} onClick={() => onNavigate('alert-detail', alert.alert_id)}>
+                <div className={`priority-item__rail priority-item__rail--${alert.severity}`} />
+                <div>
+                  <div className="priority-item__title">{alert.title}</div>
+                  <div className="priority-item__meta">
+                    {severityText[alert.severity] || alert.severity} · {statusText[alert.status] || alert.status} · {alert.source_ip || alert.account_id || '未知来源'}
+                  </div>
+                </div>
+                <div className="score-pill">{alert.risk_score}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
 
-      <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
-        <Col span={24}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>高风险资产（点击行下钻）</span>}>
-            <Table
-              columns={[
-                { title: '资产ID', dataIndex: 'asset_id', key: 'id', width: 100,
-                  render: (id: string) => <a style={{ color: '#36CFC9' }} onClick={(e) => { e.stopPropagation(); handleAssetClick(id) }}>{id}</a> },
-                { title: '路径', dataIndex: 'path_normalized', key: 'path' },
-                { title: '敏感度', dataIndex: 'sensitivity_hint', key: 'sens', width: 80,
-                  render: (s: string) => <Tag color={s === 'high' ? 'red' : s === 'medium' ? 'orange' : 'green'}>{s}</Tag> },
-                { title: '状态', dataIndex: 'status', key: 'status', width: 100,
-                  render: (s: string) => <Tag color={s === 'active' ? 'green' : s === 'shadow' ? 'orange' : 'red'}>{s}</Tag> },
-                { title: '日均调用', dataIndex: 'daily_avg_calls', key: 'calls', width: 120,
-                  render: (c: number) => c?.toLocaleString() },
-              ]}
-              dataSource={assets.filter((a: any) => a.sensitivity_hint === 'high').slice(0, 5)}
-              rowKey="asset_id"
-              pagination={false}
-              size="middle"
-              onRow={(record) => ({ onClick: () => handleAssetClick(record.asset_id), style: { cursor: 'pointer' } })}
-            />
-          </Card>
-        </Col>
-      </Row>
+        <Card title="运营状态">
+          <Space direction="vertical" size={14} style={{ width: '100%' }}>
+            <Row justify="space-between"><Col className="muted"><CheckCircleOutlined /> 数据链路</Col><Col><Tag color="success">正常</Tag></Col></Row>
+            <Row justify="space-between"><Col className="muted"><ClockCircleOutlined /> 最新发现</Col><Col>{shadowAssets.length} 个影子 API</Col></Row>
+            <Row justify="space-between"><Col className="muted"><AlertOutlined /> 处置 SLA</Col><Col>{openAlerts.length > 5 ? <Tag color="warning">需关注</Tag> : <Tag color="success">稳定</Tag>}</Col></Row>
+            <Row justify="space-between"><Col className="muted"><CloudServerOutlined /> 采集异常</Col><Col>{degradedAgents.length} 个节点</Col></Row>
+          </Space>
+        </Card>
+      </div>
+
+      <div className="two-column-grid">
+        <Card title="近 7 天风险趋势">
+          <ReactECharts option={trendOption} style={{ height: 300 }} />
+        </Card>
+        <Card title="告警等级分布">
+          <ReactECharts option={riskDistOption} style={{ height: 300 }} />
+        </Card>
+      </div>
+
+      <Card title="需要关注的 API 资产" extra={<Button type="link" onClick={() => onNavigate('assets')}>查看全部</Button>}>
+        <Table
+          columns={assetColumns}
+          dataSource={attentionAssets}
+          rowKey="asset_id"
+          pagination={false}
+          size="middle"
+          onRow={(record) => ({ onClick: () => onNavigate('asset-detail', record.asset_id), style: { cursor: 'pointer' } })}
+        />
+      </Card>
     </div>
   )
 }

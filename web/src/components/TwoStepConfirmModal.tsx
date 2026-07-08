@@ -11,6 +11,8 @@ interface Props {
 }
 
 export default function TwoStepConfirmModal({ visible, title, confirmText, confirmType = 'danger', children, onConfirm, onCancel }: Props) {
+  const isDanger = confirmType === 'danger'
+
   return (
     <Modal
       title={title}
@@ -20,10 +22,11 @@ export default function TwoStepConfirmModal({ visible, title, confirmText, confi
       footer={
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
           <Button onClick={onCancel}>取消</Button>
-          <Button type={confirmType} onClick={onConfirm}>{confirmText}</Button>
+          <Button type={isDanger ? 'primary' : confirmType} status={isDanger ? 'danger' : undefined} onClick={onConfirm}>{confirmText}</Button>
         </div>
       }
     >
+      {children}
     </Modal>
   )
 }

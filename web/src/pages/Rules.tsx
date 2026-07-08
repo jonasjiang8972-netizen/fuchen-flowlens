@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Card, Table, Tag, Tabs, Typography, Switch, Modal, Descriptions, Button, Form, InputNumber, Select, Message } from '@arco-design/web-react'
+import { Button, Card, Descriptions, InputNumber, Modal, Switch, Table, Tabs, Tag, message } from 'antd'
 import { ruleService } from '../services/api'
 
 export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: string) => void }) {
@@ -17,7 +17,7 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
   const handleToggle = async (ruleId: string, enabled: boolean) => {
     await ruleService.update(ruleId, { enabled })
     setRules(prev => prev.map(r => r.rule_id === ruleId ? { ...r, enabled } : r))
-    Message.success(`规则 ${enabled ? '已启用' : '已禁用'}`)
+    message.success(`规则 ${enabled ? '已启用' : '已禁用'}`)
   }
 
   const handleView = async (ruleId: string) => {
@@ -28,7 +28,7 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
 
   const handleApplyConfig = async (ruleId: string, key: string, value: any) => {
     await ruleService.update(ruleId, { config: { [key]: value } })
-    Message.success('配置已更新')
+    message.success('配置已更新')
   }
 
   const filteredRules = tab === 'all' ? rules : rules.filter(r => r.category === tab)
@@ -39,7 +39,10 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
     { title: '所属需求', dataIndex: 'source_requirement', key: 'fr', width: 120, render: (fr: string) => <Tag>{fr}</Tag> },
     { title: '分类', dataIndex: 'category', key: 'category', width: 100, render: (c: string) => <Tag color="blue">{c}</Tag> },
     { title: '等级', dataIndex: 'severity', key: 'severity', width: 80,
-      render: (s: string) => <Tag color={{ critical: 'red', high: 'orangered', medium: 'orange', low: 'blue' }[s]}>{s}</Tag> },
+      render: (s: string) => {
+        const colors: Record<string, string> = { critical: 'red', high: 'orangered', medium: 'orange', low: 'blue' }
+        return <Tag color={colors[s]}>{s}</Tag>
+      } },
     { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 80,
       render: (enabled: boolean, record: any) => <Switch checked={enabled} onChange={(v) => handleToggle(record.rule_id, v)} /> },
     { title: '命中次数', dataIndex: 'hit_count', key: 'hits', width: 100 },
@@ -60,18 +63,18 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
       </Card>
 
       <Card className="panel-card">
-        <Tabs activeTab={tab} onChange={setTab}>
-          <Tabs.TabPane key="all" title="全部" />
+        <Tabs activeKey={tab} onChange={setTab}>
+          <Tabs.TabPane key="all" tab="全部" />
           {categories.map(c => (
-            <Tabs.TabPane key={c} title={c} />
+            <Tabs.TabPane key={c} tab={c} />
           ))}
         </Tabs>
-        <Table columns={columns} data={filteredRules} rowKey="rule_id" pagination={false} />
+        <Table columns={columns} dataSource={filteredRules} rowKey="rule_id" pagination={false} />
       </Card>
 
       <Modal
         title={<span style={{ color: '#EDEAE0' }}>规则详情: {selectedRule?.rule_id}</span>}
-        visible={detailVisible}
+        open={detailVisible}
         onCancel={() => setDetailVisible(false)}
         footer={null}
         width={720}
@@ -86,7 +89,7 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
                 <Tag color="blue">{selectedRule.category}</Tag>
               </Descriptions.Item>
               <Descriptions.Item label="严重等级">
-                <Tag color={{ critical: 'red', high: 'orangered', medium: 'orange', low: 'blue' }[selectedRule.severity]}>{selectedRule.severity}</Tag>
+                <Tag color={({ critical: 'red', high: 'orangered', medium: 'orange', low: 'blue' } as Record<string, string>)[selectedRule.severity]}>{selectedRule.severity}</Tag>
               </Descriptions.Item>
               <Descriptions.Item label="状态">
                 <Switch checked={selectedRule.enabled} onChange={(v) => handleToggle(selectedRule.rule_id, v)} />

@@ -2,8 +2,13 @@ package service
 
 import (
 	"fmt"
+	"hash/fnv"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
 )
 
 type Asset struct {
@@ -23,8 +28,8 @@ type Asset struct {
 	NormalizationConfidence float64        `json:"normalization_confidence"`
 	Status                  string         `json:"status"`
 	SourceDistribution      map[string]string `json:"source_distribution"`
-	SensitiveFields         []string       `json:"sensitive_fields"`
-	RequestStats            *RequestStats   `json:"request_stats,omitempty"`
+	SensitiveFields         []string          `json:"sensitive_fields"`
+	RequestStats            *RequestStats     `json:"request_stats,omitempty"`
 }
 
 type RequestStats struct {
@@ -413,4 +418,225 @@ func (s *AssetService) Claim(id, owner string) error {
 	a.ClaimStatus = "claimed"
 	a.Owner = owner
 	return nil
+}
+
+func (s *AssetService) ObserveEvent(evt shared.APIEvent, sensitiveFields []string) Asset {
+	path := evt.Application.PathNormalized
+	if path == "" {
+		path = evt.Application.PathRaw
+	}
+	if path == "" {
+		path = "unknown"
+	}
+	method := evt.Application.Method
+	if method == "" {
+		method = "GET"
+	}
+	host := evt.Application.Host
+	if host == "" {
+		host = evt.Network.DstIP
+	}
+
+	id := assetID(method, host, path)
+	now := evt.Timestamp
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	a, ok := s.assets[id]
+	if !ok {
+		a = &Asset{
+			ID:                      id,
+			PathNormalized:          path,
+			PathRawSamples:          []string{},
+			Method:                  method,
+			ProtocolType:            defaultString(evt.Application.ProtocolType, "REST"),
+			Host:                    host,
+			FirstSeen:               now,
+			LastSeen:                now,
+			DailyAvgCalls:           0,
+			SensitivityHint:         sensitivityHint(sensitiveFields),
+			ClaimStatus:             "unclaimed",
+			GroupPath:               inferGroupPath(path, evt.Metadata.ServiceName),
+			NormalizationConfidence: 0.8,
+			Status:                  "active",
+			SourceDistribution:      map[string]string{"internal": "0%", "external": "0%"},
+			SensitiveFields:         []string{},
+			RequestStats: &RequestStats{
+				StatusCodeDist: make(map[string]int),
+				HourlyCalls:    make([]int, 24),
+				TopCallers:     []CallerInfo{},
+			},
+		}
+		s.assets[id] = a
+	}
+
+	a.LastSeen = now
+	if evt.Application.PathRaw != "" && !contains(a.PathRawSamples, evt.Application.PathRaw) && len(a.PathRawSamples) < 5 {
+		a.PathRawSamples = append(a.PathRawSamples, evt.Application.PathRaw)
+	}
+	for _, field := range sensitiveFields {
+		if !contains(a.SensitiveFields, field) {
+			a.SensitiveFields = append(a.SensitiveFields, field)
+		}
+	}
+	if len(a.SensitiveFields) > 0 {
+		a.SensitivityHint = sensitivityHint(a.SensitiveFields)
+	}
+	if a.RequestStats == nil {
+		a.RequestStats = &RequestStats{StatusCodeDist: make(map[string]int), HourlyCalls: make([]int, 24)}
+	}
+	a.RequestStats.TotalCalls24h++
+	a.DailyAvgCalls = a.RequestStats.TotalCalls24h
+	status := fmt.Sprintf("%d", evt.Application.StatusCode)
+	if evt.Application.StatusCode == 0 {
+		status = "0"
+	}
+	a.RequestStats.StatusCodeDist[status]++
+	if int(evt.Application.StatusCode) >= 400 {
+		total := float64(maxInt(a.RequestStats.TotalCalls24h, 1))
+		errors := 0
+		for code, count := range a.RequestStats.StatusCodeDist {
+			if strings.HasPrefix(code, "4") || strings.HasPrefix(code, "5") {
+				errors += count
+			}
+		}
+		a.RequestStats.ErrorRate24h = float64(errors) / total * 100
+	}
+	hour := now.Hour()
+	if len(a.RequestStats.HourlyCalls) < 24 {
+		a.RequestStats.HourlyCalls = make([]int, 24)
+	}
+	a.RequestStats.HourlyCalls[hour]++
+	if evt.Application.DurationMs > 0 {
+		a.RequestStats.AvgLatencyMs = (a.RequestStats.AvgLatencyMs + evt.Application.DurationMs) / 2
+		if evt.Application.DurationMs > a.RequestStats.P95LatencyMs {
+			a.RequestStats.P95LatencyMs = evt.Application.DurationMs
+		}
+	}
+	updateCallerStats(a.RequestStats, evt.Network.SrcIP, int(evt.Application.StatusCode) >= 400)
+	a.SourceDistribution = sourceDistributionFromCallers(a.RequestStats)
+
+	return *a
+}
+
+func assetID(method, host, path string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(method + "|" + host + "|" + path))
+	return fmt.Sprintf("ast-live-%08x", h.Sum32())
+}
+
+func defaultString(v, fallback string) string {
+	if v == "" {
+		return fallback
+	}
+	return v
+}
+
+func sensitivityHint(fields []string) string {
+	for _, field := range fields {
+		f := strings.ToLower(field)
+		if strings.Contains(f, "card") || strings.Contains(f, "token") || strings.Contains(f, "password") || strings.Contains(f, "id_card") {
+			return "high"
+		}
+	}
+	if len(fields) > 0 {
+		return "medium"
+	}
+	return "low"
+}
+
+func inferGroupPath(path, serviceName string) string {
+	if serviceName != "" {
+		return "自动发现/" + serviceName
+	}
+	if strings.Contains(path, "order") {
+		return "自动发现/订单域"
+	}
+	if strings.Contains(path, "payment") {
+		return "自动发现/支付域"
+	}
+	if strings.Contains(path, "admin") {
+		return "自动发现/管理域"
+	}
+	return "自动发现/未分组"
+}
+
+func sourceDistributionFromCallers(stats *RequestStats) map[string]string {
+	internal := 0
+	external := 0
+	if stats != nil {
+		for _, caller := range stats.TopCallers {
+			if isInternalIP(caller.IP) {
+				internal += caller.Calls
+			} else {
+				external += caller.Calls
+			}
+		}
+	}
+	total := internal + external
+	if total == 0 {
+		return map[string]string{"internal": "0%", "external": "0%"}
+	}
+	return map[string]string{
+		"internal": fmt.Sprintf("%d%%", internal*100/total),
+		"external": fmt.Sprintf("%d%%", external*100/total),
+	}
+}
+
+func isInternalIP(ip string) bool {
+	if strings.HasPrefix(ip, "10.") || strings.HasPrefix(ip, "192.168.") {
+		return true
+	}
+	if strings.HasPrefix(ip, "172.") {
+		parts := strings.Split(ip, ".")
+		if len(parts) > 1 {
+			second, err := strconv.Atoi(parts[1])
+			return err == nil && second >= 16 && second <= 31
+		}
+	}
+	return false
+}
+
+func updateCallerStats(stats *RequestStats, ip string, isError bool) {
+	if ip == "" {
+		ip = "unknown"
+	}
+	for i := range stats.TopCallers {
+		if stats.TopCallers[i].IP == ip {
+			stats.TopCallers[i].Calls++
+			if isError {
+				stats.TopCallers[i].ErrorRate = (stats.TopCallers[i].ErrorRate + 100) / 2
+			}
+			stats.UniqueCallers24h = len(stats.TopCallers)
+			return
+		}
+	}
+	if len(stats.TopCallers) < 5 {
+		errRate := 0.0
+		if isError {
+			errRate = 100
+		}
+		stats.TopCallers = append(stats.TopCallers, CallerInfo{IP: ip, Calls: 1, ErrorRate: errRate})
+	}
+	stats.UniqueCallers24h = len(stats.TopCallers)
+}
+
+func contains(items []string, needle string) bool {
+	for _, item := range items {
+		if item == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

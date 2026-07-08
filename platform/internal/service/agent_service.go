@@ -279,9 +279,16 @@ func (s *AgentService) getCollectedAPIs(id string) int {
 }
 
 func (s *AgentService) Register(hostname, mode, cluster string) string {
+	return s.RegisterWithID("", hostname, mode, cluster)
+}
+
+func (s *AgentService) RegisterWithID(preferredID, hostname, mode, cluster string) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := fmt.Sprintf("agent-%s-%d", hostname, time.Now().Unix()%10000)
+	if preferredID != "" {
+		id = preferredID
+	}
 	s.agents[id] = &Agent{
 		ID: id, Hostname: hostname, Status: "online",
 		CollectMode: mode, Cluster: cluster,
@@ -295,6 +302,7 @@ func (s *AgentService) UpdateHeartbeat(id string) {
 	defer s.mu.Unlock()
 	if a, ok := s.agents[id]; ok {
 		a.LastHeartbeat = time.Now()
+		a.Status = "online"
 	}
 }
 

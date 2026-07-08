@@ -107,8 +107,8 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
               <Descriptions.Item label="采集器ID">{agent.agent_id}</Descriptions.Item>
               <Descriptions.Item label="主机名">{agent.hostname}</Descriptions.Item>
               <Descriptions.Item label="状态">
-                <Tag color={{ online: 'green', offline: 'red', degraded: 'orange' }[agent.status]}>
-                  {{ online: '在线', offline: '离线', degraded: '异常' }[agent.status]}
+                <Tag color={({ online: 'green', offline: 'red', degraded: 'orange' } as Record<string, string>)[agent.status]}>
+                  {({ online: '在线', offline: '离线', degraded: '异常' } as Record<string, string>)[agent.status] || agent.status}
                 </Tag>
               </Descriptions.Item>
               <Descriptions.Item label="采集模式"><Tag color="cyan">{agent.collect_mode}</Tag></Descriptions.Item>
@@ -156,7 +156,7 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
         </Col>
         <Col span={12}>
           <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>最近日志</span>}>
-            <Table columns={logColumns} dataSource={detail?.recent_logs || []} rowKey={(r: any, i: number) => `${i}`} pagination={false} size="small" />
+            <Table columns={logColumns} dataSource={detail?.recent_logs || []} rowKey={(_: any, i?: number) => `${i ?? 0}`} pagination={false} size="small" />
           </Card>
         </Col>
       </Row>

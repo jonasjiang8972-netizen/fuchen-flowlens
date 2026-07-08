@@ -198,6 +198,39 @@ func (s *AlertService) List() []Alert {
 	return result
 }
 
+func (s *AlertService) CreateDetectionAlert(sourceRequirement, severity, title, description, sourceIP, accountID string, riskScore int, confidence float64) Alert {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	id := fmt.Sprintf("alt-det-%d", now.UnixNano())
+	alert := &Alert{
+		ID:                id,
+		Timestamp:         now,
+		Severity:          severity,
+		Title:             title,
+		Description:       description,
+		SourceRequirement: sourceRequirement,
+		RiskScore:         riskScore,
+		Confidence:        confidence,
+		Status:            "open",
+		SourceIP:          sourceIP,
+		AccountID:         accountID,
+		AffectedAssetCount: 1,
+		AttackPath: []AttackStep{
+			{
+				Sequence:  1,
+				Timestamp: now,
+				Action:    "detect",
+				Detail:    description,
+				SourceIP:  sourceIP,
+			},
+		},
+	}
+	s.alerts[id] = alert
+	return *alert
+}
+
 func (s *AlertService) Get(id string) (*Alert, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
