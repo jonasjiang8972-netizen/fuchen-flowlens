@@ -6,28 +6,28 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/auth"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/ingest"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/service"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type PlatformServer struct {
-	store         storage.Store
-	agentService  *service.AgentService
-	assetService  *service.AssetService
-	alertService  *service.AlertService
-	ruleService   *service.RuleService
-	bolaEngine    *engine.BOLAEngine
-	authEngine    *engine.AuthFailureEngine
-	bflaEngine    *engine.BFLAEngine
+	store          storage.Store
+	agentService   *service.AgentService
+	assetService   *service.AssetService
+	alertService   *service.AlertService
+	ruleService    *service.RuleService
+	bolaEngine     *engine.BOLAEngine
+	authEngine     *engine.AuthFailureEngine
+	bflaEngine     *engine.BFLAEngine
 	ingestPipeline *ingest.Pipeline
-	DemoMode      bool
+	DemoMode       bool
 }
 
 type accessDetectionRequest struct {
@@ -87,10 +87,10 @@ func (s *PlatformServer) LoginHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{
-		"token":    token,
-		"user":     user.Username,
-		"role":     user.Role,
-		"tenant":   user.TenantID,
+		"token":  token,
+		"user":   user.Username,
+		"role":   user.Role,
+		"tenant": user.TenantID,
 	})
 }
 
@@ -168,12 +168,12 @@ func (s *PlatformServer) GetAgentHandler(c *gin.Context) {
 
 func (s *PlatformServer) AgentHealthSummaryHandler(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"total_agents":   s.agentService.TotalCount(),
-		"online":         s.agentService.OnlineCount(),
-		"offline":        s.agentService.OfflineCount(),
-		"degraded":       s.agentService.DegradedCount(),
-		"total_qps":      156230,
-		"avg_drop_rate":  0.008,
+		"total_agents":  s.agentService.TotalCount(),
+		"online":        s.agentService.OnlineCount(),
+		"offline":       s.agentService.OfflineCount(),
+		"degraded":      s.agentService.DegradedCount(),
+		"total_qps":     156230,
+		"avg_drop_rate": 0.008,
 	})
 }
 
@@ -182,7 +182,7 @@ func (s *PlatformServer) AgentHealthSummaryHandler(c *gin.Context) {
 func (s *PlatformServer) ListAssetsHandler(c *gin.Context) {
 	assets := s.assetService.List()
 	c.JSON(200, gin.H{
-		"total":           len(assets),
+		"total":            len(assets),
 		"high_sensitivity": countBySensitivity(assets, "high"),
 		"shadow_count":     countByStatus(assets, "shadow"),
 		"zombie_count":     countByStatus(assets, "zombie"),
@@ -672,9 +672,9 @@ func (s *PlatformServer) GetRuleHandler(c *gin.Context) {
 func (s *PlatformServer) UpdateRuleHandler(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
-		Enabled *bool                     `json:"enabled"`
-		Config  map[string]interface{}    `json:"config"`
-		Params  []service.RuleParam       `json:"params"`
+		Enabled *bool                  `json:"enabled"`
+		Config  map[string]interface{} `json:"config"`
+		Params  []service.RuleParam    `json:"params"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})

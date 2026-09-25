@@ -17,9 +17,9 @@ import (
 
 type GatewayLogCollector struct {
 	collector.BaseCollector
-	config     collector.CollectorConfig
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
+	config collector.CollectorConfig
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 func New() collector.Collector {

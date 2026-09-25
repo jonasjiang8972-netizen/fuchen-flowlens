@@ -17,24 +17,24 @@ import (
 const AgentTokenHeader = "X-Agent-Token"
 
 type AgentRegistration struct {
-	AgentID      string        `json:"agent_id"`
-	Hostname     string        `json:"hostname"`
-	CollectMode  string        `json:"collect_mode"`
-	Cluster      string        `json:"cluster"`
-	AgentVersion string        `json:"agent_version"`
-	OS           string        `json:"os"`
-	CPUPercent   float64       `json:"cpu_percent"`
-	MemoryMB     uint64        `json:"memory_mb_used"`
+	AgentID      string  `json:"agent_id"`
+	Hostname     string  `json:"hostname"`
+	CollectMode  string  `json:"collect_mode"`
+	Cluster      string  `json:"cluster"`
+	AgentVersion string  `json:"agent_version"`
+	OS           string  `json:"os"`
+	CPUPercent   float64 `json:"cpu_percent"`
+	MemoryMB     uint64  `json:"memory_mb_used"`
 }
 
 type HeartbeatPayload struct {
-	AgentID       string  `json:"agent_id"`
-	Status        string  `json:"status"`
-	QPS           float64 `json:"qps"`
-	CPUPercent    float64 `json:"cpu_percent"`
-	MemoryMB      uint64  `json:"memory_mb"`
-	DropRate      float64 `json:"drop_rate"`
-	CollectMode   string  `json:"collect_mode"`
+	AgentID     string  `json:"agent_id"`
+	Status      string  `json:"status"`
+	QPS         float64 `json:"qps"`
+	CPUPercent  float64 `json:"cpu_percent"`
+	MemoryMB    uint64  `json:"memory_mb"`
+	DropRate    float64 `json:"drop_rate"`
+	CollectMode string  `json:"collect_mode"`
 }
 
 type Client struct {

@@ -51,4 +51,3 @@ func countByAlertStatus(alerts []service.Alert, s string) int {
 	}
 	return count
 }
-

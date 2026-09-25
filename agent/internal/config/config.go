@@ -22,14 +22,14 @@ type AgentConfig struct {
 }
 
 type CollectorConfig struct {
-	Mode           string        `yaml:"mode"`
-	Interface      string        `yaml:"interface"`
-	FilterPorts    []string      `yaml:"filter_port"`
-	CaptureHeaders bool          `yaml:"capture_headers"`
-	CaptureBody    bool          `yaml:"capture_body"`
-	MaxBodySizeKB  int           `yaml:"max_body_size_kb"`
-	BufferSize     int           `yaml:"buffer_size"`
-	Workers        int           `yaml:"workers"`
+	Mode           string   `yaml:"mode"`
+	Interface      string   `yaml:"interface"`
+	FilterPorts    []string `yaml:"filter_port"`
+	CaptureHeaders bool     `yaml:"capture_headers"`
+	CaptureBody    bool     `yaml:"capture_body"`
+	MaxBodySizeKB  int      `yaml:"max_body_size_kb"`
+	BufferSize     int      `yaml:"buffer_size"`
+	Workers        int      `yaml:"workers"`
 
 	EBPF  EBPFConfig  `yaml:"ebpf"`
 	DPDK  DPDKConfig  `yaml:"dpdk"`
@@ -42,8 +42,8 @@ type EBPFConfig struct {
 }
 
 type DPDKConfig struct {
-	NICPCI    string `yaml:"nic_pci"`
-	NumCores  int    `yaml:"num_cores"`
+	NICPCI   string `yaml:"nic_pci"`
+	NumCores int    `yaml:"num_cores"`
 }
 
 type GWLogConfig struct {
@@ -52,10 +52,10 @@ type GWLogConfig struct {
 }
 
 type VPCConfig struct {
-	Provider       string `yaml:"provider"`
-	Region         string `yaml:"region"`
-	Bucket         string `yaml:"bucket"`
-	PollIntervalSec int   `yaml:"poll_interval_s"`
+	Provider        string `yaml:"provider"`
+	Region          string `yaml:"region"`
+	Bucket          string `yaml:"bucket"`
+	PollIntervalSec int    `yaml:"poll_interval_s"`
 }
 
 type ManagementConfig struct {
@@ -70,12 +70,12 @@ type ManagementConfig struct {
 }
 
 type KafkaConfig struct {
-	Brokers          []string      `yaml:"brokers"`
-	Topic            string        `yaml:"topic"`
-	BatchSize        int           `yaml:"batch_size"`
-	FlushIntervalMs  int           `yaml:"flush_interval_ms"`
-	CompressionCodec string        `yaml:"compression_codec"`
-	MaxMessageBytes  int           `yaml:"max_message_bytes"`
+	Brokers          []string `yaml:"brokers"`
+	Topic            string   `yaml:"topic"`
+	BatchSize        int      `yaml:"batch_size"`
+	FlushIntervalMs  int      `yaml:"flush_interval_ms"`
+	CompressionCodec string   `yaml:"compression_codec"`
+	MaxMessageBytes  int      `yaml:"max_message_bytes"`
 }
 
 func Load(path string) (*Config, error) {

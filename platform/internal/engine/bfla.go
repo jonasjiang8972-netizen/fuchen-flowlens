@@ -6,19 +6,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 )
 
 type BFLAEngine struct {
-	store       storage.Store
-	mu          sync.RWMutex
+	store      storage.Store
+	mu         sync.RWMutex
 	roleMatrix map[string]map[string]int
 }
 
 func NewBFLAEngine(store storage.Store) *BFLAEngine {
 	return &BFLAEngine{
-		store:       store,
+		store:      store,
 		roleMatrix: make(map[string]map[string]int),
 	}
 }
@@ -70,7 +70,7 @@ func (e *BFLAEngine) Evaluate(accountID, role, endpoint string) (int, string) {
 		reason := fmt.Sprintf("BFLA 检测: 角色 %s 异常访问管理端点 %s (历史占比: %.1f%%)", role, endpoint, float64(currentRoleAccess)/float64(totalAccess)*100)
 
 		evt := &storage.AlertEvent{
-			ID: fmt.Sprintf("bfla-%d", time.Now().UnixNano()),
+			ID:   fmt.Sprintf("bfla-%d", time.Now().UnixNano()),
 			Type: "BFLA", Severity: "high",
 			Title:     fmt.Sprintf("BFLA 检测: %s 越权访问管理端点", accountID),
 			Detail:    reason,

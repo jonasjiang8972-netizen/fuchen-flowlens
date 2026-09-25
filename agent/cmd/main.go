@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/collector"
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/collector/gwlog"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/collector/ebpf"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/collector/gwlog"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/config"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/detector"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/health"
@@ -63,15 +63,15 @@ func main() {
 	}
 
 	collectorCfg := collector.CollectorConfig{
-		Interface:     cfg.Collector.Interface,
-		FilterPorts:   cfg.Collector.FilterPorts,
+		Interface:      cfg.Collector.Interface,
+		FilterPorts:    cfg.Collector.FilterPorts,
 		CaptureHeaders: cfg.Collector.CaptureHeaders,
 		CaptureBody:    cfg.Collector.CaptureBody,
 		MaxBodySize:    cfg.Collector.MaxBodySizeKB * 1024,
-		BufferSize:    10000,
+		BufferSize:     10000,
 		Workers:        cfg.Collector.Workers,
-		GWLogPath:     cfg.Collector.GWLog.Path,
-		GWLogFormat:   cfg.Collector.GWLog.Format,
+		GWLogPath:      cfg.Collector.GWLog.Path,
+		GWLogFormat:    cfg.Collector.GWLog.Format,
 	}
 
 	if err := coll.Initialize(collectorCfg); err != nil {

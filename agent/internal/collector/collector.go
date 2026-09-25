@@ -20,15 +20,15 @@ type Collector interface {
 }
 
 type CollectorConfig struct {
-	Interface     string
-	FilterPorts   []string
+	Interface      string
+	FilterPorts    []string
 	CaptureHeaders bool
 	CaptureBody    bool
-	MaxBodySize   int
-	BufferSize    int
-	Workers       int
-	GWLogPath     string
-	GWLogFormat   string
+	MaxBodySize    int
+	BufferSize     int
+	Workers        int
+	GWLogPath      string
+	GWLogFormat    string
 }
 
 type CollectorStats struct {

@@ -21,12 +21,12 @@ type Pipeline struct {
 	queue   chan shared.APIEvent
 	handler Handler
 
-	mu         sync.RWMutex
-	seen       map[string]time.Time
-	accepted   uint64
-	dropped    uint64
-	duplicates uint64
-	processed  uint64
+	mu          sync.RWMutex
+	seen        map[string]time.Time
+	accepted    uint64
+	dropped     uint64
+	duplicates  uint64
+	processed   uint64
 	lastEventAt time.Time
 }
 
@@ -38,12 +38,12 @@ type SubmitResult struct {
 }
 
 type Metrics struct {
-	Accepted   uint64    `json:"accepted"`
-	Dropped    uint64    `json:"dropped"`
-	Duplicates uint64    `json:"duplicates"`
-	Processed  uint64    `json:"processed"`
-	QueueDepth int       `json:"queue_depth"`
-	QueueSize  int       `json:"queue_size"`
+	Accepted    uint64    `json:"accepted"`
+	Dropped     uint64    `json:"dropped"`
+	Duplicates  uint64    `json:"duplicates"`
+	Processed   uint64    `json:"processed"`
+	QueueDepth  int       `json:"queue_depth"`
+	QueueSize   int       `json:"queue_size"`
 	LastEventAt time.Time `json:"last_event_at"`
 }
 
@@ -107,12 +107,12 @@ func (p *Pipeline) Metrics() Metrics {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return Metrics{
-		Accepted:   p.accepted,
-		Dropped:    p.dropped,
-		Duplicates: p.duplicates,
-		Processed:  p.processed,
-		QueueDepth: len(p.queue),
-		QueueSize:  cap(p.queue),
+		Accepted:    p.accepted,
+		Dropped:     p.dropped,
+		Duplicates:  p.duplicates,
+		Processed:   p.processed,
+		QueueDepth:  len(p.queue),
+		QueueSize:   cap(p.queue),
 		LastEventAt: p.lastEventAt,
 	}
 }

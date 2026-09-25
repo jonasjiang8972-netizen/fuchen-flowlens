@@ -12,22 +12,22 @@ import (
 )
 
 type MemStore struct {
-	mu            sync.RWMutex
-	agents        map[string]*service.Agent
-	assets        map[string]*service.Asset
-	alerts        map[string]*service.Alert
-	auditLogs     []AuditLog
-	users         map[string]*User
-	detectEvents  []AlertEvent
+	mu           sync.RWMutex
+	agents       map[string]*service.Agent
+	assets       map[string]*service.Asset
+	alerts       map[string]*service.Alert
+	auditLogs    []AuditLog
+	users        map[string]*User
+	detectEvents []AlertEvent
 }
 
 func NewMemStore() *MemStore {
 	s := &MemStore{
-		agents:   make(map[string]*service.Agent),
-		assets:   make(map[string]*service.Asset),
-		alerts:   make(map[string]*service.Alert),
-		auditLogs: make([]AuditLog, 0),
-		users:    make(map[string]*User),
+		agents:       make(map[string]*service.Agent),
+		assets:       make(map[string]*service.Asset),
+		alerts:       make(map[string]*service.Alert),
+		auditLogs:    make([]AuditLog, 0),
+		users:        make(map[string]*User),
 		detectEvents: make([]AlertEvent, 0),
 	}
 	s.seedUsers()
@@ -47,13 +47,13 @@ func (s *MemStore) seedUsers() {
 	s.users["admin"] = &User{
 		ID: "user-001", Username: "admin",
 		PasswordHash: string(hash),
-		Role: "super_admin", TenantID: "tenant-001",
+		Role:         "super_admin", TenantID: "tenant-001",
 		CreatedAt: time.Now(),
 	}
 	s.users["sec-ops"] = &User{
 		ID: "user-002", Username: "sec-ops",
 		PasswordHash: string(hash),
-		Role: "security_admin", TenantID: "tenant-001",
+		Role:         "security_admin", TenantID: "tenant-001",
 		CreatedAt: time.Now(),
 	}
 }
@@ -184,7 +184,7 @@ func (s *MemStore) SaveAuditLog(_ context.Context, user, action, resource, detai
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.auditLogs = append(s.auditLogs, AuditLog{
-		ID: fmt.Sprintf("log-%d", len(s.auditLogs)+1),
+		ID:   fmt.Sprintf("log-%d", len(s.auditLogs)+1),
 		User: user, Action: action, Resource: resource,
 		Detail: detail, CreatedAt: time.Now(),
 	})

@@ -5,30 +5,30 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/config"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 )
 
 type Monitor struct {
-	mu          sync.RWMutex
-	agentID     string
-	config      config.ManagementConfig
-	status      string
-	metrics     Metrics
+	mu            sync.RWMutex
+	agentID       string
+	config        config.ManagementConfig
+	status        string
+	metrics       Metrics
 	lastHeartbeat time.Time
-	handlers    []StatusHandler
+	handlers      []StatusHandler
 }
 
 type Metrics struct {
-	QPS               float64   `json:"qps"`
-	PacketsPerSec     float64   `json:"packets_per_sec"`
-	DropRate          float64   `json:"drop_rate"`
-	BytesProcessed    uint64    `json:"bytes_processed"`
-	CPUPercent        float64   `json:"cpu_percent"`
-	MemoryMB          uint64    `json:"memory_mb"`
-	KafkaLatencyMS    int64     `json:"kafka_produce_latency_ms"`
-	KafkaPending      uint64    `json:"kafka_pending_messages"`
-	CollectMode       string    `json:"collect_mode"`
+	QPS            float64 `json:"qps"`
+	PacketsPerSec  float64 `json:"packets_per_sec"`
+	DropRate       float64 `json:"drop_rate"`
+	BytesProcessed uint64  `json:"bytes_processed"`
+	CPUPercent     float64 `json:"cpu_percent"`
+	MemoryMB       uint64  `json:"memory_mb"`
+	KafkaLatencyMS int64   `json:"kafka_produce_latency_ms"`
+	KafkaPending   uint64  `json:"kafka_pending_messages"`
+	CollectMode    string  `json:"collect_mode"`
 }
 
 type StatusHandler func(status string, message string)

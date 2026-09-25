@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 )
 
 type AuthFailureEngine struct {
@@ -84,7 +84,7 @@ func (e *AuthFailureEngine) Evaluate(ip string) (int, string) {
 
 	if riskScore >= 70 {
 		evt := &storage.AlertEvent{
-			ID: fmt.Sprintf("auth-%d", time.Now().UnixNano()),
+			ID:   fmt.Sprintf("auth-%d", time.Now().UnixNano()),
 			Type: "CREDENTIAL_STUFFING", Severity: "critical",
 			Title:     fmt.Sprintf("撞库攻击: IP %s 尝试 %d 个不同账号", ip, uniqueUsers),
 			Detail:    reason,

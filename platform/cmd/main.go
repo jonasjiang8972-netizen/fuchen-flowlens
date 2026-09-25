@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/auth"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/middleware"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/server"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 )
 
 func main() {

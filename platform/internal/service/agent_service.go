@@ -7,44 +7,44 @@ import (
 )
 
 type Agent struct {
-	ID             string    `json:"agent_id"`
-	Hostname       string    `json:"hostname"`
-	Status         string    `json:"status"`
-	CollectMode    string    `json:"collect_mode"`
-	Cluster        string    `json:"cluster"`
-	QPS            float64   `json:"qps"`
-	LastHeartbeat  time.Time `json:"last_heartbeat"`
-	AgentVersion   string    `json:"agent_version"`
-	OS             string    `json:"os"`
-	Arch           string    `json:"arch"`
-	CPUPercent     float64   `json:"cpu_percent"`
-	MemoryMB       uint64    `json:"memory_mb_used"`
-	DropRate       float64   `json:"drop_rate"`
-	KernelVersion  string    `json:"kernel_version"`
-	Interface      string    `json:"interface"`
-	Namespace      string    `json:"namespace"`
-	ServiceName    string    `json:"service_name"`
-	CloudProvider  string    `json:"cloud_provider"`
-	Region         string    `json:"region"`
+	ID            string    `json:"agent_id"`
+	Hostname      string    `json:"hostname"`
+	Status        string    `json:"status"`
+	CollectMode   string    `json:"collect_mode"`
+	Cluster       string    `json:"cluster"`
+	QPS           float64   `json:"qps"`
+	LastHeartbeat time.Time `json:"last_heartbeat"`
+	AgentVersion  string    `json:"agent_version"`
+	OS            string    `json:"os"`
+	Arch          string    `json:"arch"`
+	CPUPercent    float64   `json:"cpu_percent"`
+	MemoryMB      uint64    `json:"memory_mb_used"`
+	DropRate      float64   `json:"drop_rate"`
+	KernelVersion string    `json:"kernel_version"`
+	Interface     string    `json:"interface"`
+	Namespace     string    `json:"namespace"`
+	ServiceName   string    `json:"service_name"`
+	CloudProvider string    `json:"cloud_provider"`
+	Region        string    `json:"region"`
 }
 
 type AgentDetail struct {
 	Agent
-	Metrics       *AgentMetrics   `json:"metrics"`
-	Config        *AgentConfig    `json:"config"`
-	RecentLogs    []LogEntry      `json:"recent_logs"`
-	CollectedAPIs int             `json:"collected_apis"`
+	Metrics       *AgentMetrics `json:"metrics"`
+	Config        *AgentConfig  `json:"config"`
+	RecentLogs    []LogEntry    `json:"recent_logs"`
+	CollectedAPIs int           `json:"collected_apis"`
 }
 
 type AgentMetrics struct {
-	QPSHistory       []float64         `json:"qps_history"`
-	DropRateHistory  []float64         `json:"drop_rate_history"`
-	CPUHistory       []float64         `json:"cpu_history"`
-	MemoryHistory    []uint64          `json:"memory_history"`
-	KafkaLag         int64             `json:"kafka_lag"`
-	BytesProcessed   uint64            `json:"bytes_processed"`
-	PacketsProcessed uint64            `json:"packets_processed"`
-	UptimeSeconds    int64             `json:"uptime_seconds"`
+	QPSHistory       []float64 `json:"qps_history"`
+	DropRateHistory  []float64 `json:"drop_rate_history"`
+	CPUHistory       []float64 `json:"cpu_history"`
+	MemoryHistory    []uint64  `json:"memory_history"`
+	KafkaLag         int64     `json:"kafka_lag"`
+	BytesProcessed   uint64    `json:"bytes_processed"`
+	PacketsProcessed uint64    `json:"packets_processed"`
+	UptimeSeconds    int64     `json:"uptime_seconds"`
 }
 
 type AgentConfig struct {
@@ -191,19 +191,19 @@ func (s *AgentService) GetDetail(id string) (*AgentDetail, error) {
 func (s *AgentService) getAgentMetrics(id string) *AgentMetrics {
 	metrics := map[string]*AgentMetrics{
 		"agent-prod-k8s-01": {
-			QPSHistory: []float64{14200, 14500, 14800, 15000, 15230, 15100, 14900, 15230},
+			QPSHistory:      []float64{14200, 14500, 14800, 15000, 15230, 15100, 14900, 15230},
 			DropRateHistory: []float64{0.001, 0.001, 0.002, 0.001, 0.001, 0.001, 0.002, 0.001},
-			CPUHistory: []float64{11.2, 12.0, 13.5, 12.8, 12.3, 11.9, 12.1, 12.3},
-			MemoryHistory: []uint64{480, 490, 505, 510, 512, 508, 510, 512},
-			KafkaLag: 0, BytesProcessed: 1847293447, PacketsProcessed: 892340123,
+			CPUHistory:      []float64{11.2, 12.0, 13.5, 12.8, 12.3, 11.9, 12.1, 12.3},
+			MemoryHistory:   []uint64{480, 490, 505, 510, 512, 508, 510, 512},
+			KafkaLag:        0, BytesProcessed: 1847293447, PacketsProcessed: 892340123,
 			UptimeSeconds: 86400 * 3,
 		},
 		"agent-bj-backup": {
-			QPSHistory: []float64{21000, 21500, 22000, 22500, 22300, 23000, 23500, 22300},
+			QPSHistory:      []float64{21000, 21500, 22000, 22500, 22300, 23000, 23500, 22300},
 			DropRateHistory: []float64{0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.05, 0.05},
-			CPUHistory: []float64{25.0, 30.0, 35.0, 40.0, 45.2, 48.0, 46.0, 45.2},
-			MemoryHistory: []uint64{1024, 1200, 1500, 1800, 2048, 2100, 2080, 2048},
-			KafkaLag: 12500, BytesProcessed: 923847291, PacketsProcessed: 423456789,
+			CPUHistory:      []float64{25.0, 30.0, 35.0, 40.0, 45.2, 48.0, 46.0, 45.2},
+			MemoryHistory:   []uint64{1024, 1200, 1500, 1800, 2048, 2100, 2080, 2048},
+			KafkaLag:        12500, BytesProcessed: 923847291, PacketsProcessed: 423456789,
 			UptimeSeconds: 86400 * 7,
 		},
 	}
@@ -222,13 +222,13 @@ func (s *AgentService) getAgentConfig(id string) *AgentConfig {
 			Mode: "ebpf", FilterPorts: []string{"80", "443", "8080", "8443"},
 			CaptureHeaders: true, CaptureBody: true, MaxBodySizeKB: 64,
 			KafkaBrokers: []string{"kafka-1:9092", "kafka-2:9092"},
-			KafkaTopic: "raw-api-events",
+			KafkaTopic:   "raw-api-events",
 		},
 		"agent-bj-backup": {
 			Mode: "gateway_log", FilterPorts: []string{},
 			CaptureHeaders: true, CaptureBody: true, MaxBodySizeKB: 128,
 			KafkaBrokers: []string{"kafka-1:9092"},
-			KafkaTopic: "raw-api-events",
+			KafkaTopic:   "raw-api-events",
 		},
 	}
 	if c, ok := configs[id]; ok {
@@ -263,13 +263,13 @@ func (s *AgentService) getAgentLogs(id string) []LogEntry {
 
 func (s *AgentService) getCollectedAPIs(id string) int {
 	counts := map[string]int{
-		"agent-prod-k8s-01": 45,
-		"agent-prod-k8s-02": 38,
-		"agent-prod-k8s-03": 22,
-		"agent-staging-01": 120,
-		"agent-vm-dmz-01": 156,
-		"agent-vm-dmz-02": 143,
-		"agent-bj-backup": 89,
+		"agent-prod-k8s-01":  45,
+		"agent-prod-k8s-02":  38,
+		"agent-prod-k8s-03":  22,
+		"agent-staging-01":   120,
+		"agent-vm-dmz-01":    156,
+		"agent-vm-dmz-02":    143,
+		"agent-bj-backup":    89,
 		"agent-saas-tencent": 67,
 	}
 	if c, ok := counts[id]; ok {

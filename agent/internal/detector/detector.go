@@ -13,33 +13,33 @@ import (
 type CollectMode string
 
 const (
-	ModeEBPF      CollectMode = "ebpf"
-	ModeDPDK      CollectMode = "dpdk"
+	ModeEBPF       CollectMode = "ebpf"
+	ModeDPDK       CollectMode = "dpdk"
 	ModeGatewayLog CollectMode = "gateway_log"
-	ModeVPCFlow   CollectMode = "vpc_flow"
-	ModePcap      CollectMode = "pcap"
-	ModeAuto      CollectMode = "auto"
+	ModeVPCFlow    CollectMode = "vpc_flow"
+	ModePcap       CollectMode = "pcap"
+	ModeAuto       CollectMode = "auto"
 )
 
 type Environment struct {
-	IsKubernetes   bool
-	HasCilium      bool
-	HasDPDK        bool
-	HasTAPPort     bool
-	GWLogPath      string
-	GWLogFormat    string
-	CloudProvider  string
-	HasCloudCreds  bool
-	HasPcapPerm    bool
-	KernelVersion  string
-	OS             string
-	Arch           string
+	IsKubernetes  bool
+	HasCilium     bool
+	HasDPDK       bool
+	HasTAPPort    bool
+	GWLogPath     string
+	GWLogFormat   string
+	CloudProvider string
+	HasCloudCreds bool
+	HasPcapPerm   bool
+	KernelVersion string
+	OS            string
+	Arch          string
 }
 
 func DetectEnvironment() *Environment {
 	env := &Environment{
 		OS:            runtime.GOOS,
-		Arch:           runtime.GOARCH,
+		Arch:          runtime.GOARCH,
 		KernelVersion: getKernelVersion(),
 	}
 

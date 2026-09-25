@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 )
 
 type BOLAEngine struct {
@@ -97,14 +97,14 @@ func (e *BOLAEngine) Evaluate(accountID, objectID, endpoint, sourceIP string) (i
 
 	if riskScore >= 70 {
 		evt := &storage.AlertEvent{
-			ID: fmt.Sprintf("bola-%d", time.Now().UnixNano()),
+			ID:   fmt.Sprintf("bola-%d", time.Now().UnixNano()),
 			Type: "BOLA", Severity: "high",
-			Title:       fmt.Sprintf("BOLA 检测: 账号 %s 异常遍历", accountID),
-			Detail:      reason,
-			SourceIP:    sourceIP,
-			AccountID:   accountID,
-			RiskScore:   riskScore,
-			CreatedAt:   time.Now(),
+			Title:     fmt.Sprintf("BOLA 检测: 账号 %s 异常遍历", accountID),
+			Detail:    reason,
+			SourceIP:  sourceIP,
+			AccountID: accountID,
+			RiskScore: riskScore,
+			CreatedAt: time.Now(),
 		}
 		if err := e.store.SaveDetectionEvent(context.Background(), evt); err != nil {
 			logger.L().Errorf("Failed to save BOLA event: %v", err)

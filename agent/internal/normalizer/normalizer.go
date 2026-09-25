@@ -11,16 +11,16 @@ import (
 )
 
 type Normalizer struct {
-	mu              sync.RWMutex
-	pathPatterns    []*pathPattern
-	staticPaths     map[string]string
+	mu           sync.RWMutex
+	pathPatterns []*pathPattern
+	staticPaths  map[string]string
 }
 
 type pathPattern struct {
-	regex          *regexp.Regexp
-	template       string
-	paramNames     []string
-	minConfidence  float64
+	regex         *regexp.Regexp
+	template      string
+	paramNames    []string
+	minConfidence float64
 }
 
 func New() *Normalizer {
@@ -35,33 +35,33 @@ func (n *Normalizer) initPatterns() {
 	n.pathPatterns = []*pathPattern{
 		{
 			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d+)(/|$)`),
-			template:       "/$1/{id}$3",
-			paramNames:     []string{"id"},
-			minConfidence:  0.8,
+			template:      "/$1/{id}$3",
+			paramNames:    []string{"id"},
+			minConfidence: 0.8,
 		},
 		{
 			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(/|$)`),
-			template:       "/$1/{uuid}$3",
-			paramNames:     []string{"uuid"},
-			minConfidence:  0.9,
+			template:      "/$1/{uuid}$3",
+			paramNames:    []string{"uuid"},
+			minConfidence: 0.9,
 		},
 		{
 			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d+)/([a-zA-Z0-9_-]+)/(\d+)(/|$)`),
-			template:       "/$1/{id}/$3/{id}$5",
-			paramNames:     []string{"id", "id"},
-			minConfidence:  0.7,
+			template:      "/$1/{id}/$3/{id}$5",
+			paramNames:    []string{"id", "id"},
+			minConfidence: 0.7,
 		},
 		{
 			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/([A-Z]{2,})(/|$)`),
-			template:       "/$1/{enum}$3",
-			paramNames:     []string{"enum"},
-			minConfidence:  0.6,
+			template:      "/$1/{enum}$3",
+			paramNames:    []string{"enum"},
+			minConfidence: 0.6,
 		},
 		{
 			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d{14,})(/|$)`),
-			template:       "/$1/{timestamp}$3",
-			paramNames:     []string{"timestamp"},
-			minConfidence:  0.7,
+			template:      "/$1/{timestamp}$3",
+			paramNames:    []string{"timestamp"},
+			minConfidence: 0.7,
 		},
 	}
 }
@@ -135,8 +135,8 @@ func (n *Normalizer) GetStats() map[string]interface{} {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return map[string]interface{}{
-		"cached_paths":   len(n.staticPaths),
-		"pattern_count":  len(n.pathPatterns),
+		"cached_paths":  len(n.staticPaths),
+		"pattern_count": len(n.pathPatterns),
 	}
 }
 
