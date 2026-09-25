@@ -94,6 +94,7 @@ cd fuchen-flowlens
 | `FLOWLENS_JWT_SECRET` | 用户登录 token 的签名密钥，至少 32 字节 | 每次启动随机生成，重启后所有人需要重新登录 |
 | `FLOWLENS_ADMIN_PASSWORD` | 内置账号 `admin`、`sec-ops` 的密码 | 使用开发默认密码 `admin123`，启动时会打印警告 |
 | `FLOWLENS_AGENT_TOKEN` | Agent 认证密钥（见下文） | Agent 接口一律拒绝 |
+| `FLOWLENS_CORS_ORIGINS` | 允许跨域访问的前端地址，逗号分隔，如 `https://console.example.com` | 不允许跨域（自带控制台通过同源代理访问，不受影响） |
 
 ```bash
 export FLOWLENS_JWT_SECRET=$(openssl rand -hex 32)

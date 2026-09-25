@@ -64,3 +64,30 @@ func TestAgentTokenDoesNotGrantUserAPIs(t *testing.T) {
 		t.Fatalf("agent token on user API: got %d, want 401", w.Code)
 	}
 }
+
+func TestCORSOnlyAllowsConfiguredOrigins(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(corsMiddleware(parseOrigins(" https://console.example.com/ , ")))
+	r.GET("/x", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	cases := []struct {
+		origin string
+		want   string
+	}{
+		{"https://console.example.com", "https://console.example.com"},
+		{"https://evil.example.com", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		if tc.origin != "" {
+			req.Header.Set("Origin", tc.origin)
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != tc.want {
+			t.Errorf("origin %q: Allow-Origin = %q, want %q", tc.origin, got, tc.want)
+		}
+	}
+}

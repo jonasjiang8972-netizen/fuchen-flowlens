@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -103,7 +104,7 @@ func main() {
 func setupRouter(srv *server.PlatformServer, store storage.Store, demo bool, agentToken string) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(corsMiddleware())
+	r.Use(corsMiddleware(parseOrigins(os.Getenv("FLOWLENS_CORS_ORIGINS"))))
 
 	public := r.Group("/api/v1")
 	{
@@ -170,15 +171,38 @@ func setupRouter(srv *server.PlatformServer, store storage.Store, demo bool, age
 	return r
 }
 
-func corsMiddleware() gin.HandlerFunc {
+// corsMiddleware allows cross-origin requests only from the configured
+// origins. The web console is served same-origin (nginx / vite proxy), so the
+// default empty list allows no cross-origin access.
+func corsMiddleware(allowedOrigins []string) gin.HandlerFunc {
+	allowed := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		allowed[o] = true
+	}
 	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(204)
-			return
+		origin := c.GetHeader("Origin")
+		if origin != "" && allowed[origin] {
+			h := c.Writer.Header()
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Add("Vary", "Origin")
+			h.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			if c.Request.Method == http.MethodOptions {
+				c.AbortWithStatus(http.StatusNoContent)
+				return
+			}
 		}
 		c.Next()
 	}
+}
+
+// parseOrigins splits a comma-separated origin list, dropping blanks.
+func parseOrigins(v string) []string {
+	var out []string
+	for _, o := range strings.Split(v, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			out = append(out, strings.TrimRight(o, "/"))
+		}
+	}
+	return out
 }

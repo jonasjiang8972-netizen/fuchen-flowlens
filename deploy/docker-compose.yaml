@@ -111,6 +111,8 @@ services:
       FLOWLENS_ADMIN_PASSWORD: ${FLOWLENS_ADMIN_PASSWORD:-}
       # Shared secret agents send as X-Agent-Token; agent endpoints reject all requests when empty
       FLOWLENS_AGENT_TOKEN: ${FLOWLENS_AGENT_TOKEN:-}
+      # Comma-separated origins allowed cross-origin; the bundled web console is same-origin
+      FLOWLENS_CORS_ORIGINS: ${FLOWLENS_CORS_ORIGINS:-}
     restart: unless-stopped
 
   # ============================================================
