@@ -107,7 +107,8 @@ cd fuchen-flowlens
 
 | 变量 | 作用 | 未设置时 |
 |------|------|----------|
-| `FLOWLENS_DB_DSN` | PostgreSQL 连接串，存放账号、会话、安全策略、审计日志、检测事件 | 使用内存存储并告警：重启即丢失，**不得用于生产** |
+| `FLOWLENS_DB_DSN` | PostgreSQL 连接串，存放账号、会话、安全策略、审计日志，以及资产、告警、检测规则、采集器等业务数据 | 使用内存存储并告警：重启即丢失，**不得用于生产** |
+| `FLOWLENS_SEED_DEMO` | 设为 `true` 时，在空数据库中写入示例资产、告警和采集器，仅用于演示环境 | 数据库从空开始，只自动补齐默认检测规则 |
 | `FLOWLENS_ADMIN_PASSWORD` | 首次启动时三个初始账号的初始口令 | 随机生成并打印一次 |
 | `FLOWLENS_AGENT_TOKEN` | Agent 认证密钥，同时作为凭证指纹的密钥（见下文） | Agent 接口一律拒绝 |
 | `FLOWLENS_TLS_CERT` / `FLOWLENS_TLS_KEY` | 平台直接提供 HTTPS 的证书和私钥 | 以 HTTP 提供服务，须置于 HTTPS 反向代理之后 |

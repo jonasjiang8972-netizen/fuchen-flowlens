@@ -340,6 +340,47 @@ func (s *PGStore) DeleteAuditBefore(ctx context.Context, t time.Time) (int64, er
 	return tag.RowsAffected(), nil
 }
 
+// ─── Documents ─────────────────────────────────────────────────
+
+func (s *PGStore) LoadDocuments(ctx context.Context, kind string) (map[string][]byte, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id, data FROM fl_documents WHERE kind=$1`, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string][]byte)
+	for rows.Next() {
+		var id string
+		var data []byte
+		if err := rows.Scan(&id, &data); err != nil {
+			return nil, err
+		}
+		out[id] = data
+	}
+	return out, rows.Err()
+}
+
+// SaveDocuments upserts docs in one transaction.
+func (s *PGStore) SaveDocuments(ctx context.Context, kind string, docs map[string][]byte) error {
+	if len(docs) == 0 {
+		return nil
+	}
+	batch := &pgx.Batch{}
+	for id, data := range docs {
+		batch.Queue(`INSERT INTO fl_documents (kind, id, data, updated_at) VALUES ($1, $2, $3, NOW())
+			ON CONFLICT (kind, id) DO UPDATE SET data=EXCLUDED.data, updated_at=NOW()`, kind, id, data)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // ─── Detection events ──────────────────────────────────────────
 
 func (s *PGStore) SaveDetectionEvent(ctx context.Context, e *AlertEvent) error {

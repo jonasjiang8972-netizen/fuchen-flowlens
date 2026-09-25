@@ -121,9 +121,18 @@ type AuditStore interface {
 	DeleteAuditBefore(ctx context.Context, t time.Time) (int64, error)
 }
 
+// DocumentStore persists business records (assets, alerts, rules,
+// collectors) as JSON documents keyed by kind and id. It satisfies
+// service.Repository.
+type DocumentStore interface {
+	LoadDocuments(ctx context.Context, kind string) (map[string][]byte, error)
+	SaveDocuments(ctx context.Context, kind string, docs map[string][]byte) error
+}
+
 type Store interface {
 	IdentityStore
 	AuditStore
+	DocumentStore
 
 	// Detection events (for engines to store findings)
 	SaveDetectionEvent(ctx context.Context, e *AlertEvent) error

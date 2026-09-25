@@ -86,3 +86,13 @@ CREATE TABLE IF NOT EXISTS fl_detection_events (
     created_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX IF NOT EXISTS fl_detection_created_idx ON fl_detection_events (created_at);
+
+-- Business records (assets, alerts, detection rules, collectors) stored as
+-- JSON documents; the platform keeps a working copy in memory.
+CREATE TABLE IF NOT EXISTS fl_documents (
+    kind       TEXT NOT NULL,
+    id         TEXT NOT NULL,
+    data       JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (kind, id)
+);

@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -66,14 +68,87 @@ type LogEntry struct {
 type AgentService struct {
 	mu     sync.RWMutex
 	agents map[string]*Agent
+	p      *persister
+	now    func() time.Time
+}
+
+// Heartbeat age thresholds for the collector status shown to operators.
+const (
+	agentOnlineWithin   = 60 * time.Second
+	agentDegradedWithin = 5 * time.Minute
+)
+
+// effective returns a copy of a with Status derived from heartbeat age: a
+// collector that stops reporting turns degraded, then offline, instead of
+// staying "online" forever.
+func (s *AgentService) effective(a *Agent) Agent {
+	c := *a
+	age := s.now().Sub(a.LastHeartbeat)
+	switch {
+	case age > agentDegradedWithin:
+		c.Status = "offline"
+	case age > agentOnlineWithin:
+		c.Status = "degraded"
+	case a.Status == "degraded":
+		// reported degraded by the collector itself
+	default:
+		c.Status = "online"
+	}
+	return c
 }
 
 func NewAgentService() *AgentService {
 	s := &AgentService{
 		agents: make(map[string]*Agent),
+		now:    time.Now,
 	}
 	s.seedAgents()
 	return s
+}
+
+// NewAgentServiceFrom loads collectors from repo. Sample collectors are
+// added only when seedDemo is set and the repository is empty.
+func NewAgentServiceFrom(ctx context.Context, repo Repository, seedDemo bool) (*AgentService, error) {
+	s := &AgentService{agents: make(map[string]*Agent), p: newPersister(repo, KindAgent), now: time.Now}
+	docs, err := repo.LoadDocuments(ctx, KindAgent)
+	if err != nil {
+		return nil, fmt.Errorf("load agents: %w", err)
+	}
+	for id, raw := range docs {
+		var a Agent
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return nil, fmt.Errorf("decode agent %s: %w", id, err)
+		}
+		s.agents[id] = &a
+	}
+	if len(s.agents) == 0 && seedDemo {
+		s.seedAgents()
+		ids := make([]string, 0, len(s.agents))
+		for id := range s.agents {
+			ids = append(ids, id)
+		}
+		if err := s.p.writeThrough(ctx, ids, s.snapshot); err != nil {
+			return nil, fmt.Errorf("save sample agents: %w", err)
+		}
+	}
+	return s, nil
+}
+
+func (s *AgentService) snapshot(ids []string) map[string][]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	docs := make(map[string][]byte, len(ids))
+	for _, id := range ids {
+		if a, ok := s.agents[id]; ok {
+			docs[id] = mustJSON(a)
+		}
+	}
+	return docs
+}
+
+// Flush persists heartbeat updates since the last flush.
+func (s *AgentService) Flush(ctx context.Context) (int, error) {
+	return s.p.flush(ctx, s.snapshot)
 }
 
 func (s *AgentService) seedAgents() {
@@ -157,7 +232,7 @@ func (s *AgentService) List() []Agent {
 	defer s.mu.RUnlock()
 	result := make([]Agent, 0, len(s.agents))
 	for _, a := range s.agents {
-		result = append(result, *a)
+		result = append(result, s.effective(a))
 	}
 	return result
 }
@@ -167,9 +242,10 @@ func (s *AgentService) Get(id string) (*Agent, error) {
 	defer s.mu.RUnlock()
 	a, ok := s.agents[id]
 	if !ok {
-		return nil, fmt.Errorf("agent not found: %s", id)
+		return nil, fmt.Errorf("agent %s: %w", id, ErrNotFound)
 	}
-	return a, nil
+	c := s.effective(a)
+	return &c, nil
 }
 
 func (s *AgentService) GetDetail(id string) (*AgentDetail, error) {
@@ -177,10 +253,10 @@ func (s *AgentService) GetDetail(id string) (*AgentDetail, error) {
 	defer s.mu.RUnlock()
 	a, ok := s.agents[id]
 	if !ok {
-		return nil, fmt.Errorf("agent not found: %s", id)
+		return nil, fmt.Errorf("agent %s: %w", id, ErrNotFound)
 	}
 	return &AgentDetail{
-		Agent:         *a,
+		Agent:         s.effective(a),
 		Metrics:       s.getAgentMetrics(id),
 		Config:        s.getAgentConfig(id),
 		RecentLogs:    s.getAgentLogs(id),
@@ -278,32 +354,62 @@ func (s *AgentService) getCollectedAPIs(id string) int {
 	return 0
 }
 
-func (s *AgentService) Register(hostname, mode, cluster string) string {
+func (s *AgentService) Register(hostname, mode, cluster string) (string, error) {
 	return s.RegisterWithID("", hostname, mode, cluster)
 }
 
-func (s *AgentService) RegisterWithID(preferredID, hostname, mode, cluster string) string {
+// RegisterWithID registers (or re-registers) a collector and saves it; if
+// saving fails the previous state is restored and the error returned.
+func (s *AgentService) RegisterWithID(preferredID, hostname, mode, cluster string) (string, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	id := fmt.Sprintf("agent-%s-%d", hostname, time.Now().Unix()%10000)
 	if preferredID != "" {
 		id = preferredID
 	}
+	prev, existed := s.agents[id]
 	s.agents[id] = &Agent{
 		ID: id, Hostname: hostname, Status: "online",
 		CollectMode: mode, Cluster: cluster,
-		LastHeartbeat: time.Now(), AgentVersion: "0.1.0",
+		LastHeartbeat: s.now(), AgentVersion: "0.1.0",
 	}
-	return id
+	s.mu.Unlock()
+
+	if err := s.p.writeThrough(context.Background(), []string{id}, s.snapshot); err != nil {
+		s.mu.Lock()
+		if existed {
+			s.agents[id] = prev
+		} else {
+			delete(s.agents, id)
+		}
+		s.mu.Unlock()
+		return "", fmt.Errorf("save agent %s: %w", id, err)
+	}
+	return id, nil
 }
 
 func (s *AgentService) UpdateHeartbeat(id string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if a, ok := s.agents[id]; ok {
-		a.LastHeartbeat = time.Now()
+	a, ok := s.agents[id]
+	if ok {
+		a.LastHeartbeat = s.now()
 		a.Status = "online"
 	}
+	s.mu.Unlock()
+	if ok {
+		s.p.markDirty(id)
+	}
+}
+
+func (s *AgentService) countStatus(status string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, a := range s.agents {
+		if s.effective(a).Status == status {
+			n++
+		}
+	}
+	return n
 }
 
 func (s *AgentService) TotalCount() int {
@@ -312,38 +418,6 @@ func (s *AgentService) TotalCount() int {
 	return len(s.agents)
 }
 
-func (s *AgentService) OnlineCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	count := 0
-	for _, a := range s.agents {
-		if a.Status == "online" {
-			count++
-		}
-	}
-	return count
-}
-
-func (s *AgentService) OfflineCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	count := 0
-	for _, a := range s.agents {
-		if a.Status == "offline" {
-			count++
-		}
-	}
-	return count
-}
-
-func (s *AgentService) DegradedCount() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	count := 0
-	for _, a := range s.agents {
-		if a.Status == "degraded" {
-			count++
-		}
-	}
-	return count
-}
+func (s *AgentService) OnlineCount() int   { return s.countStatus("online") }
+func (s *AgentService) OfflineCount() int  { return s.countStatus("offline") }
+func (s *AgentService) DegradedCount() int { return s.countStatus("degraded") }

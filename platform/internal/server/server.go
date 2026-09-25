@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -47,16 +48,48 @@ type accessDetectionRequest struct {
 	Status    int    `json:"status_code"`
 }
 
+// NewPlatformServer returns a server whose business data (assets, alerts,
+// rules, collectors) lives only in memory, seeded with sample data. It is
+// used for development, demo mode and tests.
 func NewPlatformServer(store storage.Store) *PlatformServer {
+	return newServer(store, service.NewAgentService(), service.NewAssetService(),
+		service.NewAlertService(), service.NewRuleService())
+}
+
+// NewPlatformServerFrom loads business data from store and persists changes
+// back to it. Sample data is added only when seedDemo is set and the store
+// holds none; default detection rules are always ensured.
+func NewPlatformServerFrom(ctx context.Context, store storage.Store, seedDemo bool) (*PlatformServer, error) {
+	agents, err := service.NewAgentServiceFrom(ctx, store, seedDemo)
+	if err != nil {
+		return nil, err
+	}
+	assets, err := service.NewAssetServiceFrom(ctx, store, seedDemo)
+	if err != nil {
+		return nil, err
+	}
+	alerts, err := service.NewAlertServiceFrom(ctx, store, seedDemo)
+	if err != nil {
+		return nil, err
+	}
+	rules, err := service.NewRuleServiceFrom(ctx, store)
+	if err != nil {
+		return nil, err
+	}
+	return newServer(store, agents, assets, alerts, rules), nil
+}
+
+func newServer(store storage.Store, agents *service.AgentService, assets *service.AssetService,
+	alerts *service.AlertService, rules *service.RuleService) *PlatformServer {
 	auditSvc := audit.New(store)
 	srv := &PlatformServer{
 		store:        store,
 		audit:        auditSvc,
 		iam:          iam.NewService(store, auditSvc),
-		agentService: service.NewAgentService(),
-		assetService: service.NewAssetService(),
-		alertService: service.NewAlertService(),
-		ruleService:  service.NewRuleService(),
+		agentService: agents,
+		assetService: assets,
+		alertService: alerts,
+		ruleService:  rules,
 		bolaEngine:   engine.NewBOLAEngine(store),
 		authEngine:   engine.NewAuthFailureEngine(store),
 		bflaEngine:   engine.NewBFLAEngine(store),
@@ -64,6 +97,21 @@ func NewPlatformServer(store storage.Store) *PlatformServer {
 	}
 	srv.ingestPipeline = ingest.NewPipeline(20000, srv.processIngestEvent)
 	return srv
+}
+
+// FlushAll persists business records changed by traffic since the last
+// flush (asset statistics, alert merges, rule hits, heartbeats).
+func (s *PlatformServer) FlushAll(ctx context.Context) error {
+	var errs []error
+	for name, flush := range map[string]func(context.Context) (int, error){
+		"assets": s.assetService.Flush, "alerts": s.alertService.Flush,
+		"rules": s.ruleService.Flush, "agents": s.agentService.Flush,
+	} {
+		if _, err := flush(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("flush %s: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s *PlatformServer) StartEngines(ctx context.Context) {
@@ -90,7 +138,12 @@ func (s *PlatformServer) RegisterAgentHandler(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid request"})
 		return
 	}
-	id := s.agentService.RegisterWithID(req.AgentID, req.Hostname, req.CollectMode, req.Cluster)
+	id, err := s.agentService.RegisterWithID(req.AgentID, req.Hostname, req.CollectMode, req.Cluster)
+	if err != nil {
+		logger.L().Errorf("agent register: %v", err)
+		c.JSON(500, gin.H{"error": "保存采集器注册信息失败"})
+		return
+	}
 	s.recordAgentEvent(c, "agent.register", id, fmt.Sprintf("hostname=%s mode=%s cluster=%s version=%s", req.Hostname, req.CollectMode, req.Cluster, req.AgentVersion))
 	c.JSON(200, gin.H{"agent_id": id, "status": "registered"})
 }
@@ -140,7 +193,7 @@ func (s *PlatformServer) GetAgentHandler(c *gin.Context) {
 	id := c.Param("id")
 	detail, err := s.agentService.GetDetail(id)
 	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		serviceErr(c, err)
 		return
 	}
 	c.JSON(200, detail)
@@ -175,7 +228,7 @@ func (s *PlatformServer) GetAssetHandler(c *gin.Context) {
 	id := c.Param("id")
 	detail, err := s.assetService.GetDetail(id)
 	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		serviceErr(c, err)
 		return
 	}
 	c.JSON(200, detail)
@@ -191,7 +244,7 @@ func (s *PlatformServer) ClaimAssetHandler(c *gin.Context) {
 		return
 	}
 	if err := s.assetService.Claim(id, req.Owner); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		serviceErr(c, err)
 		return
 	}
 	c.JSON(200, gin.H{"status": "ok"})
@@ -216,7 +269,7 @@ func (s *PlatformServer) GetAlertHandler(c *gin.Context) {
 	id := c.Param("id")
 	detail, err := s.alertService.GetDetail(id)
 	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		serviceErr(c, err)
 		return
 	}
 	c.JSON(200, detail)
@@ -231,7 +284,7 @@ func (s *PlatformServer) AlertActionHandler(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&req)
 	if err := s.alertService.ExecuteAction(id, action, req.Target, req.DurationMinutes); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		serviceErr(c, err)
 		return
 	}
 	c.JSON(200, gin.H{"status": "ok", "action": action})
@@ -617,9 +670,9 @@ func objectIDFromEvent(evt shared.APIEvent) string {
 // ─── Detection Events ──────────────────────────────────────────
 
 func (s *PlatformServer) ListDetectionEventsHandler(c *gin.Context) {
-	events, err := s.store.ListRecentAlerts(context.Background(), time.Now().Add(-24*time.Hour))
+	events, err := s.store.ListRecentAlerts(c.Request.Context(), time.Now().Add(-24*time.Hour))
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		serviceErr(c, err)
 		return
 	}
 	c.JSON(200, gin.H{
@@ -648,7 +701,7 @@ func (s *PlatformServer) GetRuleHandler(c *gin.Context) {
 	id := c.Param("id")
 	rule, err := s.ruleService.Get(id)
 	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		serviceErr(c, err)
 		return
 	}
 	c.JSON(200, rule)
@@ -669,7 +722,7 @@ func (s *PlatformServer) UpdateRuleHandler(c *gin.Context) {
 	if req.Enabled != nil {
 		rule, err := s.ruleService.UpdateEnabled(id, *req.Enabled)
 		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
+			serviceErr(c, err)
 			return
 		}
 		c.JSON(200, rule)
@@ -679,7 +732,7 @@ func (s *PlatformServer) UpdateRuleHandler(c *gin.Context) {
 	if req.Config != nil || req.Params != nil {
 		rule, err := s.ruleService.UpdateConfig(id, req.Config, req.Params)
 		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
+			serviceErr(c, err)
 			return
 		}
 		c.JSON(200, rule)
@@ -719,4 +772,15 @@ func (s *PlatformServer) FlowMapHandler(c *gin.Context) {
 		{"source": "order-service", "target": "phone", "field_name": "phone", "call_count": 28720},
 	}
 	c.JSON(200, gin.H{"nodes": nodes, "edges": edges})
+}
+
+// serviceErr maps service errors to responses without exposing internal
+// details (such as database errors) to the client.
+func serviceErr(c *gin.Context, err error) {
+	if errors.Is(err, service.ErrNotFound) {
+		c.JSON(404, gin.H{"error": "记录不存在"})
+		return
+	}
+	logger.L().Errorf("%s %s: %v", c.Request.Method, c.Request.URL.Path, err)
+	c.JSON(500, gin.H{"error": "保存失败，请稍后重试"})
 }

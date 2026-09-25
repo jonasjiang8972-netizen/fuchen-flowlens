@@ -84,7 +84,19 @@ func main() {
 	}
 	defer store.Close()
 
-	srv := server.NewPlatformServer(store)
+	var srv *server.PlatformServer
+	if cfg.dbDSN != "" {
+		seed := os.Getenv("FLOWLENS_SEED_DEMO") == "true"
+		var err error
+		if srv, err = server.NewPlatformServerFrom(ctx, store, seed); err != nil {
+			log.Fatalf("Failed to load business data: %v", err)
+		}
+		if seed {
+			log.Warn("FLOWLENS_SEED_DEMO=true — sample assets, alerts and collectors were added to an empty database")
+		}
+	} else {
+		srv = server.NewPlatformServer(store)
+	}
 	srv.DemoMode = cfg.demo
 	srv.SecureCookies = cfg.secureCookies
 	srv.SetRedactionKey(cfg.agentToken)
@@ -152,6 +164,10 @@ func main() {
 	defer shutdownCancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Errorf("Server forced shutdown: %v", err)
+	}
+	// Save traffic-driven updates made since the last periodic flush.
+	if err := srv.FlushAll(shutdownCtx); err != nil {
+		log.Errorf("Final flush of business data failed: %v", err)
 	}
 	log.Info("Server stopped gracefully")
 }

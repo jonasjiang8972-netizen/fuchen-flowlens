@@ -311,7 +311,7 @@ sequenceDiagram
 | Platform | Go 平台后端 |
 | Web | 前端控制台，Nginx 托管 |
 
-当前代码平台仍以内存服务为主，Compose 中基础设施代表 POC 到 MVP 的目标部署轮廓。
+平台数据存于 PostgreSQL：账号、会话、策略、审计日志按行存储；资产、告警、检测规则、采集器以 JSON 文档存储，平台在内存中保留工作副本以支撑高吞吐采集。用户操作同步写库，流量统计每 2 秒批量写入、停机时补写。同一时间应只运行一个平台实例处理流量（主备部署）。Compose 中的 ClickHouse、Elasticsearch、Kafka 代表后续的目标部署轮廓，当前代码尚未使用。
 
 ## 9. 安全与权限
 

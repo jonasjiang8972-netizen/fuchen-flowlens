@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -42,12 +44,74 @@ type RuleParam struct {
 type RuleService struct {
 	mu    sync.RWMutex
 	rules map[string]*Rule
+	p     *persister
 }
 
+// NewRuleService returns an in-memory service with the default rules.
 func NewRuleService() *RuleService {
 	s := &RuleService{rules: make(map[string]*Rule)}
 	s.seedRules()
 	return s
+}
+
+// NewRuleServiceFrom loads rules from repo. Default rules missing from the
+// repository (first start, or rules added in a new version) are added and
+// saved; stored rules keep their configuration.
+func NewRuleServiceFrom(ctx context.Context, repo Repository) (*RuleService, error) {
+	s := &RuleService{rules: make(map[string]*Rule), p: newPersister(repo, KindRule)}
+	docs, err := repo.LoadDocuments(ctx, KindRule)
+	if err != nil {
+		return nil, fmt.Errorf("load rules: %w", err)
+	}
+	for id, raw := range docs {
+		var r Rule
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return nil, fmt.Errorf("decode rule %s: %w", id, err)
+		}
+		s.rules[id] = &r
+	}
+	var added []string
+	for id, r := range NewRuleService().rules {
+		if _, ok := s.rules[id]; !ok {
+			s.rules[id] = r
+			added = append(added, id)
+		}
+	}
+	if err := s.p.writeThrough(ctx, added, s.snapshot); err != nil {
+		return nil, fmt.Errorf("save default rules: %w", err)
+	}
+	return s, nil
+}
+
+func (r *Rule) clone() *Rule {
+	c := *r
+	c.Config = make(map[string]interface{}, len(r.Config))
+	for k, v := range r.Config {
+		c.Config[k] = v
+	}
+	c.Params = append([]RuleParam(nil), r.Params...)
+	if r.LastHitAt != nil {
+		t := *r.LastHitAt
+		c.LastHitAt = &t
+	}
+	return &c
+}
+
+func (s *RuleService) snapshot(ids []string) map[string][]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	docs := make(map[string][]byte, len(ids))
+	for _, id := range ids {
+		if r, ok := s.rules[id]; ok {
+			docs[id] = mustJSON(r)
+		}
+	}
+	return docs
+}
+
+// Flush persists rules changed by high-frequency updates (hit counts).
+func (s *RuleService) Flush(ctx context.Context) (int, error) {
+	return s.p.flush(ctx, s.snapshot)
 }
 
 func (s *RuleService) seedRules() {
@@ -165,7 +229,7 @@ func (s *RuleService) List() []Rule {
 	defer s.mu.RUnlock()
 	result := make([]Rule, 0, len(s.rules))
 	for _, r := range s.rules {
-		result = append(result, *r)
+		result = append(result, *r.clone())
 	}
 	return result
 }
@@ -175,48 +239,65 @@ func (s *RuleService) Get(id string) (*Rule, error) {
 	defer s.mu.RUnlock()
 	r, ok := s.rules[id]
 	if !ok {
-		return nil, fmt.Errorf("rule not found: %s", id)
+		return nil, fmt.Errorf("rule %s: %w", id, ErrNotFound)
 	}
-	return r, nil
+	return r.clone(), nil
+}
+
+// update applies fn to a rule and persists it; if saving fails the rule is
+// restored and the error returned, so memory never shows an unsaved change.
+func (s *RuleService) update(id string, fn func(r *Rule)) (*Rule, error) {
+	s.mu.Lock()
+	r, ok := s.rules[id]
+	if !ok {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("rule %s: %w", id, ErrNotFound)
+	}
+	before := r.clone()
+	fn(r)
+	r.UpdatedAt = time.Now()
+	s.mu.Unlock()
+
+	if err := s.p.writeThrough(context.Background(), []string{id}, s.snapshot); err != nil {
+		s.mu.Lock()
+		s.rules[id] = before
+		s.mu.Unlock()
+		return nil, fmt.Errorf("save rule %s: %w", id, err)
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.rules[id].clone(), nil
 }
 
 func (s *RuleService) UpdateConfig(id string, config map[string]interface{}, params []RuleParam) (*Rule, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, ok := s.rules[id]
-	if !ok {
-		return nil, fmt.Errorf("rule not found: %s", id)
-	}
-	for k, v := range config {
-		r.Config[k] = v
-	}
-	if params != nil {
-		r.Params = params
-	}
-	r.UpdatedAt = time.Now()
-	return r, nil
+	return s.update(id, func(r *Rule) {
+		if r.Config == nil {
+			r.Config = make(map[string]interface{})
+		}
+		for k, v := range config {
+			r.Config[k] = v
+		}
+		if params != nil {
+			r.Params = params
+		}
+	})
 }
 
 func (s *RuleService) UpdateEnabled(id string, enabled bool) (*Rule, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	r, ok := s.rules[id]
-	if !ok {
-		return nil, fmt.Errorf("rule not found: %s", id)
-	}
-	r.Enabled = enabled
-	r.UpdatedAt = time.Now()
-	return r, nil
+	return s.update(id, func(r *Rule) { r.Enabled = enabled })
 }
 
 func (s *RuleService) IncrementHit(id string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	r, ok := s.rules[id]
 	if ok {
 		r.HitCount++
 		now := time.Now()
 		r.LastHitAt = &now
+	}
+	s.mu.Unlock()
+	if ok {
+		s.p.markDirty(id)
 	}
 }
 
@@ -226,7 +307,7 @@ func (s *RuleService) ListByCategory(category string) []Rule {
 	var result []Rule
 	for _, r := range s.rules {
 		if r.Category == category {
-			result = append(result, *r)
+			result = append(result, *r.clone())
 		}
 	}
 	return result

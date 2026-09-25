@@ -24,17 +24,27 @@ func (s *PlatformServer) IAM() *iam.Service { return s.iam }
 // Audit exposes the audit service.
 func (s *PlatformServer) Audit() *audit.Service { return s.audit }
 
-// StartMaintenance runs session cleanup and audit retention in the background.
+// FlushInterval bounds how long traffic-driven updates stay unsaved.
+const FlushInterval = 2 * time.Second
+
+// StartMaintenance runs business data flushes, session cleanup and audit
+// retention in the background.
 func (s *PlatformServer) StartMaintenance(ctx context.Context) {
 	go func() {
+		flush := time.NewTicker(FlushInterval)
 		sessions := time.NewTicker(5 * time.Minute)
 		retention := time.NewTicker(24 * time.Hour)
+		defer flush.Stop()
 		defer sessions.Stop()
 		defer retention.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-flush.C:
+				if err := s.FlushAll(ctx); err != nil {
+					logger.L().Warnf("persist business data (will retry): %v", err)
+				}
 			case <-sessions.C:
 				if err := s.iam.CleanupSessions(ctx); err != nil {
 					logger.L().Warnf("session cleanup: %v", err)

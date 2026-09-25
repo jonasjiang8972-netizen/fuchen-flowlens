@@ -16,6 +16,7 @@ type MemStore struct {
 	users        map[string]*User // by ID
 	sessions     map[string]*Session
 	settings     map[string][]byte
+	documents    map[string]map[string][]byte // kind -> id -> JSON
 	audit        []AuditRecord
 	auditSeq     int64
 	detectEvents []AlertEvent
@@ -26,6 +27,7 @@ func NewMemStore() *MemStore {
 		users:        make(map[string]*User),
 		sessions:     make(map[string]*Session),
 		settings:     make(map[string][]byte),
+		documents:    make(map[string]map[string][]byte),
 		detectEvents: make([]AlertEvent, 0),
 	}
 }
@@ -281,6 +283,30 @@ func (s *MemStore) DeleteAuditBefore(_ context.Context, t time.Time) (int64, err
 	}
 	s.audit = append([]AuditRecord(nil), s.audit[i:]...)
 	return int64(i), nil
+}
+
+// ─── Documents ─────────────────────────────────────────────────
+
+func (s *MemStore) LoadDocuments(_ context.Context, kind string) (map[string][]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string][]byte, len(s.documents[kind]))
+	for id, v := range s.documents[kind] {
+		out[id] = append([]byte(nil), v...)
+	}
+	return out, nil
+}
+
+func (s *MemStore) SaveDocuments(_ context.Context, kind string, docs map[string][]byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.documents[kind] == nil {
+		s.documents[kind] = make(map[string][]byte)
+	}
+	for id, v := range docs {
+		s.documents[kind][id] = append([]byte(nil), v...)
+	}
+	return nil
 }
 
 // ─── Detection events ──────────────────────────────────────────

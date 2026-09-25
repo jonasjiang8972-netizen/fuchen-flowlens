@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -95,6 +97,106 @@ type ChangeRecord struct {
 type AssetService struct {
 	mu     sync.RWMutex
 	assets map[string]*Asset
+	p      *persister
+}
+
+// statsState is the internal part of RequestStats (latency window, per-caller
+// counts) that the API does not expose but that must survive a restart so
+// P95 and caller statistics stay correct.
+type statsState struct {
+	LatencySamples int               `json:"latency_samples"`
+	LatencyWindow  []float64         `json:"latency_window"`
+	LatencyNext    int               `json:"latency_next"`
+	Callers        map[string][2]int `json:"callers"` // ip -> [calls, errors]
+	InternalCalls  int               `json:"internal_calls"`
+	ExternalCalls  int               `json:"external_calls"`
+}
+
+// assetDoc is the stored form of an asset.
+type assetDoc struct {
+	Asset
+	State *statsState `json:"stats_state,omitempty"`
+}
+
+func (a *Asset) toDoc() assetDoc {
+	d := assetDoc{Asset: a.snapshot()}
+	if rs := a.RequestStats; rs != nil {
+		st := &statsState{
+			LatencySamples: rs.latencySamples,
+			LatencyWindow:  append([]float64(nil), rs.latencyWindow...),
+			LatencyNext:    rs.latencyNext,
+			Callers:        make(map[string][2]int, len(rs.callers)),
+			InternalCalls:  rs.internalCalls,
+			ExternalCalls:  rs.externalCalls,
+		}
+		for ip, cc := range rs.callers {
+			st.Callers[ip] = [2]int{cc.calls, cc.errors}
+		}
+		d.State = st
+	}
+	return d
+}
+
+func (d assetDoc) toAsset() *Asset {
+	a := d.Asset
+	if a.RequestStats != nil && d.State != nil {
+		rs := a.RequestStats
+		rs.latencySamples = d.State.LatencySamples
+		rs.latencyWindow = d.State.LatencyWindow
+		rs.latencyNext = d.State.LatencyNext
+		rs.internalCalls = d.State.InternalCalls
+		rs.externalCalls = d.State.ExternalCalls
+		rs.callers = make(map[string]*callerCount, len(d.State.Callers))
+		for ip, v := range d.State.Callers {
+			rs.callers[ip] = &callerCount{calls: v[0], errors: v[1]}
+		}
+	}
+	return &a
+}
+
+// NewAssetServiceFrom loads assets from repo. Sample assets are added only
+// when seedDemo is set and the repository is empty.
+func NewAssetServiceFrom(ctx context.Context, repo Repository, seedDemo bool) (*AssetService, error) {
+	s := &AssetService{assets: make(map[string]*Asset), p: newPersister(repo, KindAsset)}
+	docs, err := repo.LoadDocuments(ctx, KindAsset)
+	if err != nil {
+		return nil, fmt.Errorf("load assets: %w", err)
+	}
+	for id, raw := range docs {
+		var d assetDoc
+		if err := json.Unmarshal(raw, &d); err != nil {
+			return nil, fmt.Errorf("decode asset %s: %w", id, err)
+		}
+		s.assets[id] = d.toAsset()
+	}
+	if len(s.assets) == 0 && seedDemo {
+		s.seedAssets()
+		ids := make([]string, 0, len(s.assets))
+		for id := range s.assets {
+			ids = append(ids, id)
+		}
+		if err := s.p.writeThrough(ctx, ids, s.snapshotDocs); err != nil {
+			return nil, fmt.Errorf("save sample assets: %w", err)
+		}
+	}
+	return s, nil
+}
+
+func (s *AssetService) snapshotDocs(ids []string) map[string][]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	docs := make(map[string][]byte, len(ids))
+	for _, id := range ids {
+		if a, ok := s.assets[id]; ok {
+			docs[id] = mustJSON(a.toDoc())
+		}
+	}
+	return docs
+}
+
+// Flush persists assets updated by traffic since the last flush.
+func (s *AssetService) Flush(ctx context.Context) (int, error) {
+	return s.p.flush(ctx, s.snapshotDocs)
 }
 
 func NewAssetService() *AssetService {
@@ -386,7 +488,7 @@ func (s *AssetService) Get(id string) (*Asset, error) {
 	defer s.mu.RUnlock()
 	a, ok := s.assets[id]
 	if !ok {
-		return nil, fmt.Errorf("asset not found: %s", id)
+		return nil, fmt.Errorf("asset %s: %w", id, ErrNotFound)
 	}
 	c := a.snapshot()
 	return &c, nil
@@ -397,7 +499,7 @@ func (s *AssetService) GetDetail(id string) (*AssetDetail, error) {
 	defer s.mu.RUnlock()
 	a, ok := s.assets[id]
 	if !ok {
-		return nil, fmt.Errorf("asset not found: %s", id)
+		return nil, fmt.Errorf("asset %s: %w", id, ErrNotFound)
 	}
 	return &AssetDetail{
 		Asset:         a.snapshot(),
@@ -462,15 +564,26 @@ func (s *AssetService) getRelatedAssets(assetID string) []string {
 	return []string{}
 }
 
+// Claim sets the asset owner and saves it; if saving fails the previous
+// owner is restored and the error returned.
 func (s *AssetService) Claim(id, owner string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	a, ok := s.assets[id]
 	if !ok {
-		return fmt.Errorf("asset not found: %s", id)
+		s.mu.Unlock()
+		return fmt.Errorf("asset %s: %w", id, ErrNotFound)
 	}
+	prevStatus, prevOwner := a.ClaimStatus, a.Owner
 	a.ClaimStatus = "claimed"
 	a.Owner = owner
+	s.mu.Unlock()
+
+	if err := s.p.writeThrough(context.Background(), []string{id}, s.snapshotDocs); err != nil {
+		s.mu.Lock()
+		a.ClaimStatus, a.Owner = prevStatus, prevOwner
+		s.mu.Unlock()
+		return fmt.Errorf("save asset %s: %w", id, err)
+	}
 	return nil
 }
 
@@ -572,6 +685,7 @@ func (s *AssetService) ObserveEvent(evt shared.APIEvent, sensitiveFields []strin
 	}
 	updateCallerStats(a.RequestStats, evt.Network.SrcIP, int(evt.Application.StatusCode) >= 400)
 	a.SourceDistribution = sourceDistributionFromCallers(a.RequestStats)
+	s.p.markDirty(id)
 
 	return a.snapshot()
 }

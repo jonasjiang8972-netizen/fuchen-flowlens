@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -20,7 +21,7 @@ func stores(t *testing.T) map[string]Store {
 		if err != nil {
 			t.Fatalf("postgres: %v", err)
 		}
-		for _, table := range []string{"fl_sessions", "fl_users", "fl_settings", "fl_detection_events"} {
+		for _, table := range []string{"fl_sessions", "fl_users", "fl_settings", "fl_detection_events", "fl_documents"} {
 			if _, err := pg.pool.Exec(context.Background(), "DELETE FROM "+table); err != nil {
 				t.Fatal(err)
 			}
@@ -247,5 +248,42 @@ func TestPostgresAuditIsAppendOnly(t *testing.T) {
 	_ = pg.AppendAudit(ctx, r, func(string) string { return "h" })
 	if _, err := pg.pool.Exec(ctx, "UPDATE fl_audit_logs SET username='forged'"); err == nil {
 		t.Fatal("UPDATE on audit table succeeded")
+	}
+}
+
+func TestDocumentContract(t *testing.T) {
+	for name, st := range stores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			if docs, err := st.LoadDocuments(ctx, "asset"); err != nil || len(docs) != 0 {
+				t.Fatalf("empty load: %v %v", docs, err)
+			}
+			if err := st.SaveDocuments(ctx, "asset", map[string][]byte{
+				"a1": []byte(`{"owner":"alice","n":1}`),
+				"a2": []byte(`{"owner":"bob","n":2}`),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			_ = st.SaveDocuments(ctx, "alert", map[string][]byte{"a1": []byte(`{"kind":"alert"}`)})
+			// Upsert replaces the whole document.
+			if err := st.SaveDocuments(ctx, "asset", map[string][]byte{"a1": []byte(`{"owner":"carol"}`)}); err != nil {
+				t.Fatal(err)
+			}
+			docs, err := st.LoadDocuments(ctx, "asset")
+			if err != nil || len(docs) != 2 {
+				t.Fatalf("load: %d docs, %v", len(docs), err)
+			}
+			var a1 map[string]any
+			_ = json.Unmarshal(docs["a1"], &a1)
+			if a1["owner"] != "carol" || a1["n"] != nil {
+				t.Fatalf("upsert did not replace document: %s", docs["a1"])
+			}
+			if alerts, _ := st.LoadDocuments(ctx, "alert"); len(alerts) != 1 {
+				t.Fatalf("kinds not separated: %d alerts", len(alerts))
+			}
+			if err := st.SaveDocuments(ctx, "asset", nil); err != nil {
+				t.Fatalf("empty save: %v", err)
+			}
+		})
 	}
 }

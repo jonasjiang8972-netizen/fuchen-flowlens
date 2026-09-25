@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -63,6 +65,7 @@ type AlertService struct {
 	activeDetections map[string]string
 	now              func() time.Time
 	seq              uint64 // makes detection alert IDs unique within a nanosecond
+	p                *persister
 }
 
 const (
@@ -80,6 +83,72 @@ func NewAlertService() *AlertService {
 	}
 	s.seedAlerts()
 	return s
+}
+
+// NewAlertServiceFrom loads alerts from repo. Sample alerts are added only
+// when seedDemo is set and the repository is empty; a production platform
+// starts with no alerts rather than invented ones.
+func NewAlertServiceFrom(ctx context.Context, repo Repository, seedDemo bool) (*AlertService, error) {
+	s := &AlertService{
+		alerts:           make(map[string]*Alert),
+		activeDetections: make(map[string]string),
+		now:              time.Now,
+		p:                newPersister(repo, KindAlert),
+	}
+	docs, err := repo.LoadDocuments(ctx, KindAlert)
+	if err != nil {
+		return nil, fmt.Errorf("load alerts: %w", err)
+	}
+	for id, raw := range docs {
+		var a Alert
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return nil, fmt.Errorf("decode alert %s: %w", id, err)
+		}
+		s.alerts[id] = &a
+	}
+	// Rebuild the merge index: each detection key points at its most
+	// recently seen alert, so repeats keep merging across restarts.
+	for id, a := range s.alerts {
+		if a.OccurrenceCount == 0 {
+			continue
+		}
+		key := detectionKey(a.SourceRequirement, a.AccountID, a.SourceIP)
+		if cur, ok := s.activeDetections[key]; !ok || s.alerts[cur].LastSeen.Before(a.LastSeen) {
+			s.activeDetections[key] = id
+		}
+	}
+	if len(s.alerts) == 0 && seedDemo {
+		s.seedAlerts()
+		ids := make([]string, 0, len(s.alerts))
+		for id := range s.alerts {
+			ids = append(ids, id)
+		}
+		if err := s.p.writeThrough(ctx, ids, s.snapshot); err != nil {
+			return nil, fmt.Errorf("save sample alerts: %w", err)
+		}
+	}
+	return s, nil
+}
+
+func detectionKey(requirement, accountID, sourceIP string) string {
+	return requirement + "|" + accountID + "|" + sourceIP
+}
+
+func (s *AlertService) snapshot(ids []string) map[string][]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	docs := make(map[string][]byte, len(ids))
+	for _, id := range ids {
+		if a, ok := s.alerts[id]; ok {
+			docs[id] = mustJSON(a)
+		}
+	}
+	return docs
+}
+
+// Flush persists alerts changed by detections since the last flush.
+func (s *AlertService) Flush(ctx context.Context) (int, error) {
+	return s.p.flush(ctx, s.snapshot)
 }
 
 func (s *AlertService) seedAlerts() {
@@ -223,7 +292,7 @@ func (s *AlertService) CreateDetectionAlert(sourceRequirement, severity, title, 
 	defer s.mu.Unlock()
 
 	now := s.now()
-	key := sourceRequirement + "|" + accountID + "|" + sourceIP
+	key := detectionKey(sourceRequirement, accountID, sourceIP)
 	if id, ok := s.activeDetections[key]; ok {
 		if a, ok := s.alerts[id]; ok && mergeable(a, now) {
 			a.OccurrenceCount++
@@ -239,6 +308,7 @@ func (s *AlertService) CreateDetectionAlert(sourceRequirement, severity, title, 
 			if confidence > a.Confidence {
 				a.Confidence = confidence
 			}
+			s.p.markDirty(id)
 			if len(a.AttackPath) < maxAttackPathSteps {
 				a.AttackPath = append(a.AttackPath, AttackStep{
 					Sequence:  len(a.AttackPath) + 1,
@@ -281,6 +351,7 @@ func (s *AlertService) CreateDetectionAlert(sourceRequirement, severity, title, 
 	}
 	s.alerts[id] = alert
 	s.activeDetections[key] = id
+	s.p.markDirty(id)
 	return *alert
 }
 
@@ -313,7 +384,7 @@ func (s *AlertService) Get(id string) (*Alert, error) {
 	defer s.mu.RUnlock()
 	a, ok := s.alerts[id]
 	if !ok {
-		return nil, fmt.Errorf("alert not found: %s", id)
+		return nil, fmt.Errorf("alert %s: %w", id, ErrNotFound)
 	}
 	c := *a
 	c.AttackPath = append([]AttackStep(nil), a.AttackPath...)
@@ -325,7 +396,7 @@ func (s *AlertService) GetDetail(id string) (*AlertDetail, error) {
 	defer s.mu.RUnlock()
 	a, ok := s.alerts[id]
 	if !ok {
-		return nil, fmt.Errorf("alert not found: %s", id)
+		return nil, fmt.Errorf("alert %s: %w", id, ErrNotFound)
 	}
 	return &AlertDetail{
 		Alert:         *a,
@@ -392,18 +463,29 @@ func (s *AlertService) getRawData(alertID string) map[string]string {
 	}
 }
 
+// ExecuteAction records a disposal action on an alert. The change is saved
+// before it is reported; if saving fails the alert is restored.
 func (s *AlertService) ExecuteAction(alertID, action, target string, durationMin int) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	a, ok := s.alerts[alertID]
 	if !ok {
-		return fmt.Errorf("alert not found: %s", alertID)
+		s.mu.Unlock()
+		return fmt.Errorf("alert %s: %w", alertID, ErrNotFound)
 	}
+	prevStatus, prevDisposal := a.Status, a.Disposal
 	a.Status = "in_progress"
 	a.Disposal = &DisposalInfo{
 		Action:     action,
 		Status:     "success",
 		ExecutedAt: time.Now(),
+	}
+	s.mu.Unlock()
+
+	if err := s.p.writeThrough(context.Background(), []string{alertID}, s.snapshot); err != nil {
+		s.mu.Lock()
+		a.Status, a.Disposal = prevStatus, prevDisposal
+		s.mu.Unlock()
+		return fmt.Errorf("save alert %s: %w", alertID, err)
 	}
 	return nil
 }
