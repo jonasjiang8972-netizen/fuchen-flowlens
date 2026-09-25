@@ -264,9 +264,12 @@ func TestAgentStatusFollowsHeartbeatAge(t *testing.T) {
 	s, _ := NewAgentServiceFrom(ctx, repo, false)
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
-	id, err := s.RegisterWithID("agent-1", "host", "ebpf", "prod")
+	id, err := s.RegisterWithID("agent-1", "host", "ebpf", "prod", "0.7.0", "linux")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if a, _ := s.Get(id); a.AgentVersion != "0.7.0" || a.OS != "linux" {
+		t.Fatalf("reported version/os not kept: %q %q", a.AgentVersion, a.OS)
 	}
 	status := func() string { a, _ := s.Get(id); return a.Status }
 	if status() != "online" {
@@ -296,7 +299,7 @@ func TestAgentRegisterRollsBackWhenSaveFails(t *testing.T) {
 	repo := newMemRepo()
 	s, _ := NewAgentServiceFrom(ctx, repo, false)
 	repo.setFail(true)
-	if _, err := s.RegisterWithID("agent-x", "h", "ebpf", "c"); err == nil {
+	if _, err := s.RegisterWithID("agent-x", "h", "ebpf", "c", "0.7.0", "linux"); err == nil {
 		t.Fatal("register reported success although saving failed")
 	}
 	if _, err := s.Get("agent-x"); err == nil {

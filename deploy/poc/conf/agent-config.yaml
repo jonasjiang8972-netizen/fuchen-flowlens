@@ -1,0 +1,30 @@
+# FlowLens agent configuration for the POC compose deployment.
+# The auth token comes from FLOWLENS_AGENT_TOKEN in .env.
+agent:
+  id: poc-agent-01
+  cluster: poc
+  log_level: info
+
+collector:
+  # gateway_log: tail a JSON access log (one JSON object per line), e.g.
+  # {"request":{"method":"GET","uri":"/api/v1/users/1","host":"shop"},
+  #  "response":{"status":200},"client_ip":"10.0.0.8",
+  #  "upstream_addr":"10.0.1.5:8080","request_length":312,
+  #  "bytes_sent":1024,"request_time":0.012,"route":{"name":"user-svc"}}
+  mode: gateway_log
+  gateway_log:
+    path: /var/log/gateway/access.log
+    format: json
+
+management:
+  # Inside the compose network the agent talks to the platform directly.
+  # An agent on another host uses the console address instead, e.g.
+  # 10.0.0.10:8443 with use_tls: true and tls_ca_path set to the CA (or the
+  # self-signed certs/server.crt) of the console certificate.
+  platform_endpoint: platform:8080
+  use_tls: false
+  heartbeat_interval_s: 10s
+
+kafka:
+  batch_size: 200
+  flush_interval_ms: 1000

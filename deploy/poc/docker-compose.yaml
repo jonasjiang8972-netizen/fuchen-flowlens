@@ -1,0 +1,150 @@
+# FlowLens POC deployment. Run through install.sh / flowlens-ctl.sh, which
+# create .env (secrets, image version, ports) next to this file.
+#
+#   default          postgres + platform + web
+#   --profile agent  adds an agent tailing a gateway access log
+#   --profile demo   adds a generator writing sample gateway traffic
+name: flowlens
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "5"
+
+services:
+  postgres:
+    image: ${FLOWLENS_POSTGRES_IMAGE:-postgres:16-alpine}
+    <<: *logging
+    environment:
+      POSTGRES_DB: flowlens
+      POSTGRES_USER: flowlens
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run install.sh or set POSTGRES_PASSWORD in .env}
+      TZ: ${FLOWLENS_TZ:-Asia/Shanghai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowlens -d flowlens"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  platform:
+    image: flowlens-platform:${FLOWLENS_VERSION:?set FLOWLENS_VERSION in .env}
+    <<: [*hardening, *logging]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Inside the internal compose network TLS is off; for an external
+      # database use sslmode=verify-full.
+      FLOWLENS_DB_DSN: postgres://flowlens:${POSTGRES_PASSWORD}@postgres:5432/flowlens?sslmode=disable
+      # Initial password of sysadmin / auditadmin / secadmin, used only when
+      # the database is empty; each account must change it at first login.
+      FLOWLENS_ADMIN_PASSWORD: ${FLOWLENS_ADMIN_PASSWORD:-}
+      # Shared secret agents send as X-Agent-Token.
+      FLOWLENS_AGENT_TOKEN: ${FLOWLENS_AGENT_TOKEN:?run install.sh or set FLOWLENS_AGENT_TOKEN in .env}
+      # Only the web container (frontend network) may set X-Forwarded-For.
+      FLOWLENS_TRUSTED_PROXIES: ${FLOWLENS_TRUSTED_PROXIES:-172.30.10.0/24}
+      FLOWLENS_COOKIE_SECURE: ${FLOWLENS_COOKIE_SECURE:-false}
+      FLOWLENS_CORS_ORIGINS: ${FLOWLENS_CORS_ORIGINS:-}
+      FLOWLENS_SEED_DEMO: ${FLOWLENS_SEED_DEMO:-false}
+      TZ: ${FLOWLENS_TZ:-Asia/Shanghai}
+    networks:
+      - backend
+      - frontend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 6
+    restart: unless-stopped
+
+  web:
+    image: flowlens-web:${FLOWLENS_VERSION}
+    <<: [*hardening, *logging]
+    depends_on:
+      platform:
+        condition: service_healthy
+    ports:
+      - "${FLOWLENS_BIND_ADDR:-0.0.0.0}:${FLOWLENS_HTTP_PORT:-8080}:8080"
+      - "${FLOWLENS_BIND_ADDR:-0.0.0.0}:${FLOWLENS_HTTPS_PORT:-8443}:8443"
+    environment:
+      FLOWLENS_WEB_HTTPS: ${FLOWLENS_WEB_HTTPS:-false}
+      FLOWLENS_HTTPS_PUBLIC_PORT: ${FLOWLENS_HTTPS_PORT:-8443}
+      TZ: ${FLOWLENS_TZ:-Asia/Shanghai}
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
+    networks:
+      - frontend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    restart: unless-stopped
+
+  agent:
+    profiles: ["agent", "demo"]
+    image: flowlens-agent:${FLOWLENS_VERSION}
+    <<: [*hardening, *logging]
+    depends_on:
+      platform:
+        condition: service_healthy
+    environment:
+      FLOWLENS_AGENT_TOKEN: ${FLOWLENS_AGENT_TOKEN}
+      TZ: ${FLOWLENS_TZ:-Asia/Shanghai}
+    volumes:
+      - ./conf/agent-config.yaml:/etc/flowlens/agent-config.yaml:ro
+      # A host directory holding the gateway's JSON access log
+      # (FLOWLENS_GATEWAY_LOG_DIR), or the demo generator's volume.
+      - ${FLOWLENS_GATEWAY_LOG_DIR:-gateway_logs}:/var/log/gateway:ro
+    networks:
+      - backend
+    restart: unless-stopped
+
+  demo-traffic:
+    profiles: ["demo"]
+    image: flowlens-agent:${FLOWLENS_VERSION}
+    <<: *logging
+    # Writes into the shared log volume, which is owned by root.
+    user: "0"
+    entrypoint: ["/bin/sh", "/etc/flowlens/demo-traffic.sh"]
+    command: []
+    environment:
+      DEMO_RATE: ${FLOWLENS_DEMO_RATE:-5}
+    volumes:
+      - ./conf/demo-traffic.sh:/etc/flowlens/demo-traffic.sh:ro
+      - ${FLOWLENS_GATEWAY_LOG_DIR:-gateway_logs}:/var/log/gateway
+    network_mode: none
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+networks:
+  # Database and platform only; no route outside the host.
+  backend:
+    internal: true
+  # Web console <-> platform. Its subnet is the only trusted proxy range.
+  frontend:
+    ipam:
+      config:
+        - subnet: ${FLOWLENS_FRONTEND_SUBNET:-172.30.10.0/24}
+
+volumes:
+  postgres_data:
+  gateway_logs:

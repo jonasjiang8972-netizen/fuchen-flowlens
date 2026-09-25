@@ -139,7 +139,7 @@ func (s *PlatformServer) RegisterAgentHandler(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid request"})
 		return
 	}
-	id, err := s.agentService.RegisterWithID(req.AgentID, req.Hostname, req.CollectMode, req.Cluster)
+	id, err := s.agentService.RegisterWithID(req.AgentID, req.Hostname, req.CollectMode, req.Cluster, req.AgentVersion, req.OS)
 	if err != nil {
 		logger.L().Errorf("agent register: %v", err)
 		c.JSON(500, gin.H{"error": "保存采集器注册信息失败"})
@@ -169,11 +169,14 @@ func (s *PlatformServer) HeartbeatHandler(c *gin.Context) {
 
 // ─── Health ────────────────────────────────────────────────────
 
+// startedAt is the process start time reported as uptime by /health.
+var startedAt = time.Now()
+
 func (s *PlatformServer) HealthHandler(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"status":  "ok",
 		"version": version.Version,
-		"uptime":  time.Now().Unix(),
+		"uptime":  int64(time.Since(startedAt).Seconds()),
 	})
 }
 

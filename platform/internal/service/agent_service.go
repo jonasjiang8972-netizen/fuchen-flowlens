@@ -355,12 +355,12 @@ func (s *AgentService) getCollectedAPIs(id string) int {
 }
 
 func (s *AgentService) Register(hostname, mode, cluster string) (string, error) {
-	return s.RegisterWithID("", hostname, mode, cluster)
+	return s.RegisterWithID("", hostname, mode, cluster, "", "")
 }
 
 // RegisterWithID registers (or re-registers) a collector and saves it; if
 // saving fails the previous state is restored and the error returned.
-func (s *AgentService) RegisterWithID(preferredID, hostname, mode, cluster string) (string, error) {
+func (s *AgentService) RegisterWithID(preferredID, hostname, mode, cluster, agentVersion, osName string) (string, error) {
 	s.mu.Lock()
 	id := fmt.Sprintf("agent-%s-%d", hostname, time.Now().Unix()%10000)
 	if preferredID != "" {
@@ -370,7 +370,7 @@ func (s *AgentService) RegisterWithID(preferredID, hostname, mode, cluster strin
 	s.agents[id] = &Agent{
 		ID: id, Hostname: hostname, Status: "online",
 		CollectMode: mode, Cluster: cluster,
-		LastHeartbeat: s.now(), AgentVersion: "0.1.0",
+		LastHeartbeat: s.now(), AgentVersion: agentVersion, OS: osName,
 	}
 	s.mu.Unlock()
 

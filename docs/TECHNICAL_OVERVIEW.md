@@ -299,19 +299,19 @@ sequenceDiagram
 
 ## 8. 部署架构
 
-`deploy/docker-compose.yaml` 当前定义了 POC 环境：
+`deploy/poc/docker-compose.yaml` 定义了 POC 环境（安装方法见 `docs/POC_INSTALL.md`）：
 
-| 服务 | 作用 |
-|------|------|
-| Postgres | 元数据存储 |
-| ClickHouse | 流量日志和大规模时序分析规划存储 |
-| Elasticsearch | 威胁检索和证据检索规划存储 |
-| Kafka / Zookeeper | 事件流式管道规划组件 |
-| Redis | 缓存和队列规划组件 |
-| Platform | Go 平台后端 |
-| Web | 前端控制台，Nginx 托管 |
+| 服务 | 作用 | 网络 |
+|------|------|------|
+| postgres | 平台全部数据 | backend（内部网络，不能访问外网，不对外暴露端口） |
+| platform | Go 平台后端 | backend + frontend，不对外暴露端口 |
+| web | 前端控制台（nginx），反向代理 `/api/` 到平台，提供 HTTP/HTTPS | frontend，唯一对外暴露端口的服务 |
+| agent（可选） | 读取网关 JSON 访问日志并上报 | backend |
+| demo-traffic（可选） | 生成演示流量日志 | 无网络 |
 
-平台数据存于 PostgreSQL：账号、会话、策略、审计日志按行存储；资产、告警、检测规则、采集器以 JSON 文档存储，平台在内存中保留工作副本以支撑高吞吐采集。用户操作同步写库，流量统计每 2 秒批量写入、停机时补写。同一时间应只运行一个平台实例处理流量（主备部署）。Compose 中的 ClickHouse、Elasticsearch、Kafka 代表后续的目标部署轮廓，当前代码尚未使用。
+镜像 `flowlens-platform`、`flowlens-web`、`flowlens-agent` 以版本号为标签（与 `pkg/version` 一致），均以非 root 用户运行，compose 中去掉了全部 capabilities。`scripts/package-poc.sh` 把镜像和部署文件打成离线安装包。
+
+平台数据存于 PostgreSQL：账号、会话、策略、审计日志按行存储；资产、告警、检测规则、采集器以 JSON 文档存储，平台在内存中保留工作副本以支撑高吞吐采集。用户操作同步写库，流量统计每 2 秒批量写入、停机时补写。同一时间应只运行一个平台实例处理流量（主备部署）。ClickHouse、Elasticsearch、Kafka 属于后续的目标架构，当前代码尚未使用，POC 部署中不包含。
 
 ## 9. 安全与权限
 

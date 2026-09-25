@@ -3,11 +3,15 @@ package gwlog
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/collector"
@@ -69,21 +73,76 @@ func (g *GatewayLogCollector) HealthCheck() error {
 	return nil
 }
 
+// openRetryInterval is how often a missing gateway log is re-checked.
+var openRetryInterval = time.Second
+
+// openLog waits until the gateway log can be opened, so the agent may start
+// before the gateway writes its first line. It returns nil when ctx ends.
+func (g *GatewayLogCollector) openLog(ctx context.Context) *os.File {
+	warned := false
+	for {
+		file, err := os.Open(g.config.GWLogPath)
+		if err == nil {
+			if warned {
+				logger.L().Infof("Gateway log %s is now available", g.config.GWLogPath)
+			}
+			return file
+		}
+		if !warned {
+			logger.L().Warnf("Gateway log not readable yet, retrying: %v", err)
+			warned = true
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(openRetryInterval):
+		}
+	}
+}
+
+// tailLoop follows the gateway log from its current end. It keeps an
+// incomplete last line until the rest is written, starts over when the file
+// is truncated (copytruncate rotation) and reopens it when it is replaced
+// (rename rotation).
 func (g *GatewayLogCollector) tailLoop(ctx context.Context) {
-	file, err := os.Open(g.config.GWLogPath)
-	if err != nil {
-		logger.L().Errorf("Failed to open gateway log: %v", err)
+	file := g.openLog(ctx)
+	if file == nil {
 		return
 	}
-	defer file.Close()
+	defer func() { file.Close() }()
 
-	_, err = file.Seek(0, 2)
+	offset, err := file.Seek(0, io.SeekEnd)
 	if err != nil {
 		logger.L().Errorf("Failed to seek log file: %v", err)
 		return
 	}
 
 	reader := bufio.NewReader(file)
+	var partial strings.Builder
+	drain := func() {
+		for {
+			chunk, err := reader.ReadString('\n')
+			offset += int64(len(chunk))
+			if err != nil {
+				partial.WriteString(chunk)
+				return
+			}
+			line := chunk
+			if partial.Len() > 0 {
+				partial.WriteString(chunk)
+				line = partial.String()
+				partial.Reset()
+			}
+			g.handleLine(line)
+		}
+	}
+	restart := func(f *os.File) {
+		file = f
+		offset = 0
+		reader.Reset(f)
+		partial.Reset()
+	}
+
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -92,21 +151,45 @@ func (g *GatewayLogCollector) tailLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			for {
-				line, err := reader.ReadString('\n')
-				if err != nil {
-					break
-				}
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				evt := g.parseLine(line)
-				if evt != nil {
-					g.Emit(evt)
-				}
-			}
 		}
+		drain()
+
+		cur, err := os.Stat(g.config.GWLogPath)
+		if err != nil {
+			continue // rotated away and not recreated yet: keep the old file
+		}
+		open, err := file.Stat()
+		if err != nil {
+			continue
+		}
+		switch {
+		case !os.SameFile(cur, open):
+			drain() // lines written to the old file before the switch
+			nf, err := os.Open(g.config.GWLogPath)
+			if err != nil {
+				continue
+			}
+			logger.L().Infof("Gateway log %s was rotated, reopening", g.config.GWLogPath)
+			file.Close()
+			restart(nf)
+		case cur.Size() < offset:
+			logger.L().Infof("Gateway log %s was truncated, reading from the start", g.config.GWLogPath)
+			if _, err := file.Seek(0, io.SeekStart); err != nil {
+				logger.L().Errorf("Failed to seek log file: %v", err)
+				return
+			}
+			restart(file)
+		}
+	}
+}
+
+func (g *GatewayLogCollector) handleLine(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	if evt := g.parseLine(line); evt != nil {
+		g.Emit(evt)
 	}
 }
 
@@ -118,6 +201,19 @@ func (g *GatewayLogCollector) parseLine(line string) *shared.APIEvent {
 	return g.parseJSON(line)
 }
 
+// newEventID returns an ID unique per event. The platform drops events whose
+// ID it has already seen, so IDs must not repeat even for lines read in the
+// same instant.
+func newEventID(now time.Time) string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("gw-%d-%d", now.UnixNano(), eventSeq.Add(1))
+	}
+	return fmt.Sprintf("gw-%d-%s", now.UnixNano(), hex.EncodeToString(b[:]))
+}
+
+var eventSeq atomic.Uint64
+
 func (g *GatewayLogCollector) parseJSON(line string) *shared.APIEvent {
 	var entry map[string]interface{}
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
@@ -126,7 +222,7 @@ func (g *GatewayLogCollector) parseJSON(line string) *shared.APIEvent {
 
 	now := time.Now()
 	evt := &shared.APIEvent{
-		EventID:   fmt.Sprintf("%d-%d", now.Unix(), now.UnixMilli()%100000),
+		EventID:   newEventID(now),
 		Timestamp: now,
 		Source:    "gateway_log",
 		Application: shared.ApplicationLayer{

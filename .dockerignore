@@ -1,0 +1,10 @@
+.git
+**/node_modules
+web/dist
+web/dist-demo
+dist
+deploy/poc/.env
+deploy/poc/certs
+deploy/poc/data
+**/*.test
+**/*.out

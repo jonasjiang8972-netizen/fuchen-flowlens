@@ -75,14 +75,32 @@
 
 ## 快速开始
 
-> 项目处于早期规划阶段，开发指南将随里程碑推进逐步完善。
+### POC 安装（Docker）
+
+离线安装包 `flowlens-poc-<版本>-<架构>.tar.gz` 内含全部镜像，服务器不需要连接互联网：
 
 ```bash
-# 克隆仓库
+tar -xzf flowlens-poc-0.7.0-amd64.tar.gz
+cd flowlens-poc-0.7.0-amd64
+./install.sh --demo            # 附带演示流量；正式试用加 --https --with-agent
+```
+
+在源码仓库中也可以直接安装，脚本会从源码构建镜像：
+
+```bash
+cd deploy/poc && ./install.sh --demo
+```
+
+- 生成离线安装包：`scripts/package-poc.sh`
+- 环境要求、接入真实流量、HTTPS、备份与恢复、升级等见 [docs/POC_INSTALL.md](docs/POC_INSTALL.md)
+
+### 开发
+
+```bash
 git clone git@github.com:jonasjiang8972-netizen/fuchen-flowlens.git
 cd fuchen-flowlens
-
-# TODO: 开发环境搭建指南
+go test ./...                      # 后端和 Agent
+cd web && npm ci && npm run dev    # 前端
 ```
 
 ### 两个控制台与角色
@@ -117,7 +135,7 @@ cd fuchen-flowlens
 | `FLOWLENS_TRUSTED_PROXIES` | 可信反向代理的 IP/网段，只信任它们的 `X-Forwarded-For` | 不信任任何代理，按连接地址记录来源 IP |
 | `FLOWLENS_CORS_ORIGINS` | 允许跨域访问的前端地址，逗号分隔 | 不允许跨域（自带控制台同源访问，不受影响） |
 
-使用 `deploy/docker-compose.yaml` 时，把 `deploy/.env.example` 复制为 `deploy/.env` 并填写各项密钥。
+POC 部署时这些变量由 `deploy/poc/install.sh` 写入 `.env`，其中的密钥随机生成，见 [docs/POC_INSTALL.md](docs/POC_INSTALL.md)。
 
 平台自身的口令、登录失败锁定、会话超时、审计保留期等策略，由系统管理员在管理后台“安全策略”中配置，取值不能低于合规下限：
 
@@ -164,7 +182,7 @@ fuchen-flowlens/
 ├── engine/                 # 分析引擎模块 (The Lens Engine)
 ├── api/                    # 对外 API 服务
 ├── web/                    # 前端控制台
-├── deploy/                 # 部署配置 (Docker/K8s)
+├── deploy/poc/             # Docker POC 部署：compose、安装与运维脚本
 ├── scripts/                # 工具脚本
 └── tests/                  # 测试用例
 ```

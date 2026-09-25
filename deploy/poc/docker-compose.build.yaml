@@ -1,0 +1,22 @@
+# Build the FlowLens images from this source tree instead of loading them:
+#   docker compose -f docker-compose.yaml -f docker-compose.build.yaml build
+# install.sh uses it automatically when run from a source checkout.
+services:
+  platform:
+    build:
+      context: ../..
+      dockerfile: platform/Dockerfile
+      args:
+        VERSION: ${FLOWLENS_VERSION}
+  web:
+    build:
+      context: ../../web
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${FLOWLENS_VERSION}
+  agent:
+    build:
+      context: ../..
+      dockerfile: agent/Dockerfile
+      args:
+        VERSION: ${FLOWLENS_VERSION}
