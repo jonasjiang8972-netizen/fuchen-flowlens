@@ -105,6 +105,8 @@ services:
       CLICKHOUSE_ADDR: clickhouse:9000
       ES_ADDR: http://elasticsearch:9200
       LOG_LEVEL: info
+      # Shared secret agents send as X-Agent-Token; agent endpoints reject all requests when empty
+      FLOWLENS_AGENT_TOKEN: ${FLOWLENS_AGENT_TOKEN:-}
     restart: unless-stopped
 
   # ============================================================

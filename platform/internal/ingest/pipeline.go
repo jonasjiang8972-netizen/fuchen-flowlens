@@ -11,6 +11,12 @@ import (
 
 type Handler func(context.Context, shared.APIEvent)
 
+// maxSeen bounds the dedup table so a flood of unique event IDs cannot grow
+// memory without limit; past it, events are accepted without dedup.
+const maxSeen = 200000
+
+const seenTTL = 30 * time.Minute
+
 type Pipeline struct {
 	queue   chan shared.APIEvent
 	handler Handler
@@ -81,6 +87,7 @@ func (p *Pipeline) Submit(ctx context.Context, events []shared.APIEvent) SubmitR
 		select {
 		case <-ctx.Done():
 			result.Dropped++
+			p.markDropped(evt.EventID)
 		case p.queue <- evt:
 			result.Accepted++
 			p.mu.Lock()
@@ -89,9 +96,7 @@ func (p *Pipeline) Submit(ctx context.Context, events []shared.APIEvent) SubmitR
 			p.mu.Unlock()
 		default:
 			result.Dropped++
-			p.mu.Lock()
-			p.dropped++
-			p.mu.Unlock()
+			p.markDropped(evt.EventID)
 		}
 	}
 	result.QueueDepth = len(p.queue)
@@ -135,8 +140,30 @@ func (p *Pipeline) isDuplicate(eventID string) bool {
 		p.duplicates++
 		return true
 	}
-	p.seen[eventID] = time.Now()
+	if len(p.seen) >= maxSeen {
+		p.pruneSeenLocked(time.Now().Add(-seenTTL))
+	}
+	if len(p.seen) < maxSeen {
+		p.seen[eventID] = time.Now()
+	}
 	return false
+}
+
+// markDropped counts a dropped event and forgets its ID so a retry of the
+// same event is not rejected as a duplicate.
+func (p *Pipeline) markDropped(eventID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.dropped++
+	delete(p.seen, eventID)
+}
+
+func (p *Pipeline) pruneSeenLocked(cutoff time.Time) {
+	for id, ts := range p.seen {
+		if ts.Before(cutoff) {
+			delete(p.seen, id)
+		}
+	}
 }
 
 func (p *Pipeline) cleanupSeen(ctx context.Context) {
@@ -147,13 +174,8 @@ func (p *Pipeline) cleanupSeen(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			cutoff := time.Now().Add(-30 * time.Minute)
 			p.mu.Lock()
-			for id, ts := range p.seen {
-				if ts.Before(cutoff) {
-					delete(p.seen, id)
-				}
-			}
+			p.pruneSeenLocked(time.Now().Add(-seenTTL))
 			p.mu.Unlock()
 		}
 	}

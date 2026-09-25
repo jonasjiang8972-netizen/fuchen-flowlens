@@ -42,6 +42,10 @@ func main() {
 	if err != nil {
 		log.Warnf("Using default config: %v", err)
 		cfg = config.DefaultConfig()
+		config.ApplyEnv(cfg)
+	}
+	if cfg.Management.AuthToken == "" {
+		log.Warn("No agent auth token configured (management.auth_token / FLOWLENS_AGENT_TOKEN); platform will reject requests unless it runs in demo mode")
 	}
 
 	env := detector.DetectEnvironment()
@@ -185,15 +189,15 @@ func processEvents(ctx context.Context, coll collector.Collector, norm *normaliz
 		out := make([]shared.APIEvent, len(batch))
 		copy(out, batch)
 		batch = batch[:0]
-		if err := mgr.SendEvents(ctx, out); err != nil {
+		dropped, err := mgr.SendEvents(ctx, out)
+		if err != nil {
 			log.Warnf("Failed to ingest %d events: %v", len(out), err)
-			mon.UpdateMetrics(func(m *health.Metrics) {
-				m.DropRate = 1
-			})
-			return
+		} else if dropped > 0 {
+			log.Warnf("Platform dropped %d of %d events (ingest queue full)", dropped, len(out))
 		}
+		dropRate := float64(dropped) / float64(len(out))
 		mon.UpdateMetrics(func(m *health.Metrics) {
-			m.DropRate = 0
+			m.DropRate = dropRate
 		})
 	}
 

@@ -66,6 +66,7 @@ type ManagementConfig struct {
 	UseTLS              bool          `yaml:"use_tls"`
 	TLSCertPath         string        `yaml:"tls_cert_path"`
 	TLSCAPath           string        `yaml:"tls_ca_path"`
+	AuthToken           string        `yaml:"auth_token"`
 }
 
 type KafkaConfig struct {
@@ -92,8 +93,16 @@ func Load(path string) (*Config, error) {
 		hostname, _ := os.Hostname()
 		cfg.Agent.ID = fmt.Sprintf("%s-%d", hostname, os.Getpid())
 	}
+	ApplyEnv(cfg)
 
 	return cfg, nil
+}
+
+// ApplyEnv overrides config values with environment variables.
+func ApplyEnv(cfg *Config) {
+	if token := os.Getenv("FLOWLENS_AGENT_TOKEN"); token != "" {
+		cfg.Management.AuthToken = token
+	}
 }
 
 func DefaultConfig() *Config {

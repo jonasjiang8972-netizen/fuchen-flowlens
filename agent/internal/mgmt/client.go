@@ -13,6 +13,9 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
 )
 
+// AgentTokenHeader must match the platform's auth.AgentTokenHeader.
+const AgentTokenHeader = "X-Agent-Token"
+
 type AgentRegistration struct {
 	AgentID      string        `json:"agent_id"`
 	Hostname     string        `json:"hostname"`
@@ -60,7 +63,7 @@ func (c *Client) Register(ctx context.Context, reg *AgentRegistration) error {
 	}
 
 	body, _ := json.Marshal(reg)
-	resp, err := c.httpClient.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := c.post(ctx, url, body)
 	if err != nil {
 		return fmt.Errorf("register agent: %w", err)
 	}
@@ -92,7 +95,7 @@ func (c *Client) SendHeartbeat(ctx context.Context, hb *HeartbeatPayload) error 
 	}
 
 	body, _ := json.Marshal(hb)
-	resp, err := c.httpClient.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := c.post(ctx, url, body)
 	if err != nil {
 		c.registered = false
 		return fmt.Errorf("heartbeat: %w", err)
@@ -103,12 +106,17 @@ func (c *Client) SendHeartbeat(ctx context.Context, hb *HeartbeatPayload) error 
 		c.registered = false
 		return fmt.Errorf("agent not found on platform")
 	}
+	if resp.StatusCode == 401 {
+		return fmt.Errorf("heartbeat rejected: invalid or missing agent token")
+	}
 	return nil
 }
 
-func (c *Client) SendEvents(ctx context.Context, events []shared.APIEvent) error {
+// SendEvents posts a batch to the platform and returns how many events the
+// platform dropped (all of them when the request itself fails).
+func (c *Client) SendEvents(ctx context.Context, events []shared.APIEvent) (int, error) {
 	if len(events) == 0 {
-		return nil
+		return 0, nil
 	}
 	url := fmt.Sprintf("http://%s/api/v1/ingest/batch", c.cfg.PlatformEndpoint)
 	if c.cfg.UseTLS {
@@ -118,21 +126,31 @@ func (c *Client) SendEvents(ctx context.Context, events []shared.APIEvent) error
 		Events []shared.APIEvent `json:"events"`
 	}{Events: events})
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	resp, err := c.post(ctx, url, body)
 	if err != nil {
-		return fmt.Errorf("create ingest request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("send events: %w", err)
+		return 0, fmt.Errorf("send events: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("ingest failed: %d", resp.StatusCode)
+		return len(events), fmt.Errorf("ingest failed: %d", resp.StatusCode)
 	}
-	return nil
+	var result struct {
+		Dropped int `json:"dropped"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&result)
+	return result.Dropped, nil
+}
+
+func (c *Client) post(ctx context.Context, url string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.cfg.AuthToken != "" {
+		req.Header.Set(AgentTokenHeader, c.cfg.AuthToken)
+	}
+	return c.httpClient.Do(req)
 }
 
 func (c *Client) StartHeartbeatLoop(ctx context.Context, cfg config.ManagementConfig, getMetrics func() HeartbeatPayload) {

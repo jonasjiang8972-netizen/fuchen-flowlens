@@ -85,6 +85,17 @@ cd fuchen-flowlens
 # TODO: 开发环境搭建指南
 ```
 
+### Agent 认证
+
+Agent 调用平台的注册、心跳和流量上报接口（`/agents/register`、`/agents/:id/heartbeat`、`/ingest/*`）时，使用共享密钥认证，通过请求头 `X-Agent-Token` 发送，不走用户登录 JWT。
+
+- **平台**：设置环境变量 `FLOWLENS_AGENT_TOKEN`（或启动参数 `-agent-token`）。未设置时，这些接口一律拒绝（`-demo` 模式除外）。
+- **Agent**：在配置文件中设置 `management.auth_token`，或设置环境变量 `FLOWLENS_AGENT_TOKEN`（优先级更高）。两端的值必须一致。
+
+```bash
+export FLOWLENS_AGENT_TOKEN=$(openssl rand -hex 32)
+```
+
 ## 目录结构
 
 ```

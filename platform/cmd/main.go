@@ -21,13 +21,15 @@ import (
 
 func main() {
 	var (
-		port  int
-		debug bool
-		demo  bool
+		port       int
+		debug      bool
+		demo       bool
+		agentToken string
 	)
 	flag.IntVar(&port, "port", 8080, "http server port")
 	flag.BoolVar(&debug, "debug", false, "enable debug mode")
 	flag.BoolVar(&demo, "demo", false, "demo mode: disable auth, use seed data only")
+	flag.StringVar(&agentToken, "agent-token", os.Getenv("FLOWLENS_AGENT_TOKEN"), "shared token agents use for register/heartbeat/ingest (env FLOWLENS_AGENT_TOKEN)")
 	flag.Parse()
 
 	if err := logger.Init(debug); err != nil {
@@ -54,9 +56,11 @@ func main() {
 	log.Infof("Starting %s Platform v%s on port %d", version.Name, version.Version, port)
 	if demo {
 		log.Warn("Running in DEMO mode — authentication disabled")
+	} else if agentToken == "" {
+		log.Warn("FLOWLENS_AGENT_TOKEN not set — agent register/heartbeat/ingest requests will be rejected")
 	}
 
-	router := setupRouter(srv, store, demo)
+	router := setupRouter(srv, store, demo, agentToken)
 
 	httpSrv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", port),
@@ -83,7 +87,7 @@ func main() {
 	log.Info("Server stopped gracefully")
 }
 
-func setupRouter(srv *server.PlatformServer, store storage.Store, demo bool) *gin.Engine {
+func setupRouter(srv *server.PlatformServer, store storage.Store, demo bool, agentToken string) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(corsMiddleware())
@@ -103,12 +107,20 @@ func setupRouter(srv *server.PlatformServer, store storage.Store, demo bool) *gi
 		rg.Use(middleware.AuditMiddleware(store))
 	}
 
+	// Agent-facing endpoints authenticate with the shared agent token, not user JWTs
+	agentRG := r.Group("/api/v1")
+	if !demo {
+		agentRG.Use(auth.AgentTokenMiddleware(agentToken))
+	}
+	agentRG.POST("/agents/register", srv.RegisterAgentHandler)
+	agentRG.POST("/agents/:id/heartbeat", srv.HeartbeatHandler)
+	agentRG.POST("/ingest/event", srv.IngestEventHandler)
+	agentRG.POST("/ingest/batch", srv.IngestBatchHandler)
+
 	// Agent management
 	rg.GET("/agents", srv.ListAgentsHandler)
 	rg.GET("/agents/:id", srv.GetAgentHandler)
 	rg.GET("/agents/health/summary", srv.AgentHealthSummaryHandler)
-	rg.POST("/agents/register", srv.RegisterAgentHandler)
-	rg.POST("/agents/:id/heartbeat", srv.HeartbeatHandler)
 
 	// Assets
 	rg.GET("/assets", srv.ListAssetsHandler)
@@ -121,8 +133,6 @@ func setupRouter(srv *server.PlatformServer, store storage.Store, demo bool) *gi
 	rg.POST("/alerts/:id/:action", srv.AlertActionHandler)
 
 	// Detection
-	rg.POST("/ingest/event", srv.IngestEventHandler)
-	rg.POST("/ingest/batch", srv.IngestBatchHandler)
 	rg.GET("/ingest/metrics", srv.IngestMetricsHandler)
 	rg.POST("/detect/access", srv.RecordAccessHandler)
 	rg.GET("/detect/events", srv.ListDetectionEventsHandler)

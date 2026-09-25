@@ -266,7 +266,7 @@ func (s *PlatformServer) IngestEventHandler(c *gin.Context) {
 		return
 	}
 	result := s.ingestPipeline.Submit(c.Request.Context(), []shared.APIEvent{evt})
-	c.JSON(202, result)
+	c.JSON(ingestStatus(result), result)
 }
 
 func (s *PlatformServer) IngestBatchHandler(c *gin.Context) {
@@ -286,7 +286,16 @@ func (s *PlatformServer) IngestBatchHandler(c *gin.Context) {
 		return
 	}
 	result := s.ingestPipeline.Submit(c.Request.Context(), req.Events)
-	c.JSON(202, result)
+	c.JSON(ingestStatus(result), result)
+}
+
+// ingestStatus returns 503 when nothing was accepted because the queue was
+// full, so clients can back off; partial drops are reported in the body.
+func ingestStatus(r ingest.SubmitResult) int {
+	if r.Accepted == 0 && r.Dropped > 0 {
+		return 503
+	}
+	return 202
 }
 
 func (s *PlatformServer) IngestMetricsHandler(c *gin.Context) {
