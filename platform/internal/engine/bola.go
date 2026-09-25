@@ -14,6 +14,7 @@ type BOLAEngine struct {
 	store       storage.Store
 	mu          sync.RWMutex
 	accountBase map[string]*AccountBaseline
+	now         func() time.Time
 }
 
 type AccountBaseline struct {
@@ -35,6 +36,7 @@ func NewBOLAEngine(store storage.Store) *BOLAEngine {
 	return &BOLAEngine{
 		store:       store,
 		accountBase: make(map[string]*AccountBaseline),
+		now:         time.Now,
 	}
 }
 
@@ -51,7 +53,7 @@ func (e *BOLAEngine) Evaluate(accountID, objectID, endpoint, sourceIP string) (i
 		e.accountBase[accountID] = baseline
 	}
 
-	now := time.Now()
+	now := e.now()
 	baseline.TotalAccesses++
 	baseline.ObjectIDs[objectID]++
 	baseline.WindowAccess = append(baseline.WindowAccess, ObjectAccess{ObjectID: objectID, At: now})
@@ -122,7 +124,7 @@ func (e *BOLAEngine) StartCleanup(ctx context.Context) {
 		case <-ticker.C:
 			e.mu.Lock()
 			for id, b := range e.accountBase {
-				if time.Since(b.LastAccess) > 24*time.Hour {
+				if e.now().Sub(b.LastAccess) > 24*time.Hour {
 					delete(e.accountBase, id)
 				}
 			}

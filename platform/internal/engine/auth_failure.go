@@ -14,6 +14,7 @@ type AuthFailureEngine struct {
 	store       storage.Store
 	mu          sync.RWMutex
 	failTracker map[string]*AuthTracker
+	now         func() time.Time
 }
 
 type AuthTracker struct {
@@ -28,6 +29,7 @@ func NewAuthFailureEngine(store storage.Store) *AuthFailureEngine {
 	return &AuthFailureEngine{
 		store:       store,
 		failTracker: make(map[string]*AuthTracker),
+		now:         time.Now,
 	}
 }
 
@@ -40,27 +42,30 @@ func (e *AuthFailureEngine) RecordFailure(ip, username string) {
 		tracker = &AuthTracker{
 			IP:          ip,
 			UsernameSet: make(map[string]bool),
-			FirstSeen:   time.Now(),
+			FirstSeen:   e.now(),
 		}
 		e.failTracker[ip] = tracker
 	}
 
 	tracker.FailCount++
 	tracker.UsernameSet[username] = true
-	tracker.LastSeen = time.Now()
+	tracker.LastSeen = e.now()
 }
 
 func (e *AuthFailureEngine) Evaluate(ip string) (int, string) {
+	// Read the tracker under the lock: RecordFailure mutates it concurrently.
 	e.mu.RLock()
 	tracker, ok := e.failTracker[ip]
-	e.mu.RUnlock()
 	if !ok {
+		e.mu.RUnlock()
 		return 0, ""
 	}
-
 	failCount := tracker.FailCount
 	uniqueUsers := len(tracker.UsernameSet)
-	duration := time.Since(tracker.FirstSeen).Minutes()
+	firstSeen := tracker.FirstSeen
+	e.mu.RUnlock()
+
+	duration := e.now().Sub(firstSeen).Minutes()
 	if duration < 1 {
 		duration = 1
 	}
@@ -71,7 +76,7 @@ func (e *AuthFailureEngine) Evaluate(ip string) (int, string) {
 
 	if rate > 10 && uniqueUsers > 5 {
 		riskScore = 80 + min(int((rate-10)*2), 20)
-		reason = fmt.Sprintf("撞库特征: %s 在 %.0f 分钟内尝试 %d 个不同账号, 速率 %.1f/s", ip, duration, uniqueUsers, rate)
+		reason = fmt.Sprintf("撞库特征: %s 在 %.0f 分钟内尝试 %d 个不同账号, 速率 %.1f/min", ip, duration, uniqueUsers, rate)
 	} else if rate > 5 && uniqueUsers > 3 {
 		riskScore = 60
 		reason = fmt.Sprintf("高频失败登录: %s, %d 次/%.0f 分钟", ip, failCount, duration)
@@ -105,7 +110,7 @@ func (e *AuthFailureEngine) StartCleanup(ctx context.Context) {
 		case <-ticker.C:
 			e.mu.Lock()
 			for ip, t := range e.failTracker {
-				if time.Since(t.LastSeen) > 1*time.Hour {
+				if e.now().Sub(t.LastSeen) > 1*time.Hour {
 					delete(e.failTracker, ip)
 				}
 			}
