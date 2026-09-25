@@ -42,11 +42,20 @@ export interface AuditQuery {
 
 export interface VerifyResult {
   ok: boolean
+  mode: 'incremental' | 'full'
   checked: number
   first_seq: number
   last_seq: number
   broken_at?: number
   reason?: string
+  finished_at?: string
+}
+
+export interface FullVerifyStatus {
+  running: boolean
+  started_at?: string
+  checked: number
+  last?: VerifyResult
 }
 
 export interface UserInput {
@@ -81,10 +90,14 @@ export const adminService = {
     : request<{ policy: Policy; defaults: Policy }>('/admin/security-policy')),
   updatePolicy: (p: Policy) => request<{ policy: Policy }>('/admin/security-policy', { method: 'PUT', body: JSON.stringify(p) }),
 
+  // total is capped at 10000; total_capped means "more than 10000".
   audit: (q: AuditQuery) => (DEMO ? Promise.resolve(demoAudit(q))
-    : request<{ total: number; items: AuditRecord[] }>(`/admin/audit-logs${qs(q as Record<string, unknown>)}`)),
-  verifyAudit: () => (DEMO ? Promise.resolve({ ok: true, checked: 1284, first_seq: 1, last_seq: 1284 } as VerifyResult)
+    : request<{ total: number; total_capped?: boolean; items: AuditRecord[] }>(`/admin/audit-logs${qs(q as Record<string, unknown>)}`)),
+  verifyAudit: () => (DEMO ? Promise.resolve({ ok: true, mode: 'incremental', checked: 37, first_seq: 1248, last_seq: 1284 } as VerifyResult)
     : request<VerifyResult>('/admin/audit-logs/verify')),
+  startFullVerify: () => (DEMO ? Promise.resolve({ started: false, status: demoFullStatus() })
+    : request<{ started: boolean; status: FullVerifyStatus }>('/admin/audit-logs/verify-full', { method: 'POST', body: '{}' })),
+  fullVerifyStatus: () => (DEMO ? Promise.resolve(demoFullStatus()) : request<FullVerifyStatus>('/admin/audit-logs/verify-full')),
   auditExportUrl: (q: AuditQuery) => `${API_BASE}/admin/audit-logs/export${qs({ ...q, limit: undefined, offset: undefined } as Record<string, unknown>)}`,
 
   systemInfo: () => (DEMO ? Promise.resolve({ version: '0.7.0', storage: 'postgresql', secure_cookie: true, demo_mode: false,
@@ -93,6 +106,11 @@ export const adminService = {
 }
 
 // ─── Demo data ───────────────────────────────────────────────────
+
+function demoFullStatus(): FullVerifyStatus {
+  const at = new Date(Date.now() - 5 * 3600000).toISOString()
+  return { running: false, checked: 1284, last: { ok: true, mode: 'full', checked: 1284, first_seq: 1, last_seq: 1284, finished_at: at } }
+}
 
 function demoPolicy(): Policy {
   return {
@@ -130,7 +148,7 @@ function demoRoles(): RoleInfo[] {
   ]
 }
 
-function demoAudit(q: AuditQuery): { total: number; items: AuditRecord[] } {
+function demoAudit(q: AuditQuery): { total: number; total_capped?: boolean; items: AuditRecord[] } {
   const base = [
     ['sysadmin', 'sys_admin', '10.20.1.15', 'admin', 'user.create', 'zhang.wei', 'success', '', 'role=analyst'],
     ['li.na', 'analyst', '10.20.3.41', 'auth', 'auth.login', 'li.na', 'failure', '口令错误（连续第 5 次），账号已锁定', ''],

@@ -110,6 +110,10 @@ type IdentityStore interface {
 	PutSetting(ctx context.Context, key string, value []byte) error
 }
 
+// MaxAuditCount caps the total ListAudit reports: beyond it the store
+// returns MaxAuditCount+1 ("more than") instead of counting every match.
+const MaxAuditCount = 10000
+
 // AuditStore persists the audit trail. AppendAudit must serialise appends:
 // it calls chain with the hash of the current last record, and stores the
 // record chain returns, atomically.
@@ -118,6 +122,8 @@ type AuditStore interface {
 	ListAudit(ctx context.Context, q AuditQuery) ([]AuditRecord, int, error)
 	// WalkAudit visits every record in ascending seq order.
 	WalkAudit(ctx context.Context, fn func(AuditRecord) error) error
+	// WalkAuditFrom visits records with seq >= from in ascending seq order.
+	WalkAuditFrom(ctx context.Context, from int64, fn func(AuditRecord) error) error
 	DeleteAuditBefore(ctx context.Context, t time.Time) (int64, error)
 }
 
@@ -136,7 +142,9 @@ type Store interface {
 
 	// Detection events (for engines to store findings)
 	SaveDetectionEvent(ctx context.Context, e *AlertEvent) error
-	ListRecentAlerts(ctx context.Context, since time.Time) ([]AlertEvent, error)
+	// ListRecentAlerts returns up to limit events after since, newest first.
+	ListRecentAlerts(ctx context.Context, since time.Time, limit int) ([]AlertEvent, error)
+	DeleteDetectionEventsBefore(ctx context.Context, t time.Time) (int64, error)
 
 	Close() error
 }

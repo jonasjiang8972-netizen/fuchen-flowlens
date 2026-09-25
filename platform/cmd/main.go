@@ -276,6 +276,8 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	auditRead := perm("admin", iam.PermAuditRead)
 	adm.GET("/audit-logs", auditRead, srv.ListAuditHandler)
 	adm.GET("/audit-logs/verify", auditRead, srv.VerifyAuditHandler)
+	adm.POST("/audit-logs/verify-full", auditRead, srv.StartFullVerifyHandler)
+	adm.GET("/audit-logs/verify-full", auditRead, srv.FullVerifyStatusHandler)
 	adm.GET("/audit-logs/export", auditRead, srv.ExportAuditHandler)
 
 	return r

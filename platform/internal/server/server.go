@@ -82,6 +82,7 @@ func NewPlatformServerFrom(ctx context.Context, store storage.Store, seedDemo bo
 func newServer(store storage.Store, agents *service.AgentService, assets *service.AssetService,
 	alerts *service.AlertService, rules *service.RuleService) *PlatformServer {
 	auditSvc := audit.New(store)
+	auditSvc.SetSettings(store)
 	srv := &PlatformServer{
 		store:        store,
 		audit:        auditSvc,
@@ -670,7 +671,7 @@ func objectIDFromEvent(evt shared.APIEvent) string {
 // ─── Detection Events ──────────────────────────────────────────
 
 func (s *PlatformServer) ListDetectionEventsHandler(c *gin.Context) {
-	events, err := s.store.ListRecentAlerts(c.Request.Context(), time.Now().Add(-24*time.Hour))
+	events, err := s.store.ListRecentAlerts(c.Request.Context(), time.Now().Add(-24*time.Hour), 1000)
 	if err != nil {
 		serviceErr(c, err)
 		return

@@ -211,6 +211,10 @@ func (s *MemStore) AppendAudit(_ context.Context, rec *AuditRecord, chain func(p
 	if n := len(s.audit); n > 0 {
 		prev = s.audit[n-1].Hash
 	}
+	// Keep time monotonic, as the PostgreSQL store does.
+	if n := len(s.audit); n > 0 && rec.Time.Before(s.audit[n-1].Time) {
+		rec.Time = s.audit[n-1].Time
+	}
 	s.auditSeq++
 	rec.Seq = s.auditSeq
 	rec.PrevHash = prev
@@ -223,8 +227,14 @@ func matchAudit(r AuditRecord, q AuditQuery) bool {
 	if q.Username != "" && !strings.EqualFold(r.Username, q.Username) {
 		return false
 	}
-	if q.EventType != "" && !strings.HasPrefix(r.EventType, q.EventType) {
-		return false
+	if q.EventType != "" {
+		if cat, ok := categoryOf(q.EventType); ok {
+			if strings.SplitN(r.EventType, ".", 2)[0] != cat {
+				return false
+			}
+		} else if r.EventType != q.EventType {
+			return false
+		}
 	}
 	if q.Result != "" && r.Result != q.Result {
 		return false
@@ -252,6 +262,9 @@ func (s *MemStore) ListAudit(_ context.Context, q AuditQuery) ([]AuditRecord, in
 		}
 	}
 	total := len(matched)
+	if total > MaxAuditCount {
+		total = MaxAuditCount + 1
+	}
 	if q.Offset > len(matched) {
 		q.Offset = len(matched)
 	}
@@ -262,11 +275,18 @@ func (s *MemStore) ListAudit(_ context.Context, q AuditQuery) ([]AuditRecord, in
 	return matched, total, nil
 }
 
-func (s *MemStore) WalkAudit(_ context.Context, fn func(AuditRecord) error) error {
+func (s *MemStore) WalkAudit(ctx context.Context, fn func(AuditRecord) error) error {
+	return s.WalkAuditFrom(ctx, 0, fn)
+}
+
+func (s *MemStore) WalkAuditFrom(_ context.Context, from int64, fn func(AuditRecord) error) error {
 	s.mu.RLock()
 	records := append([]AuditRecord(nil), s.audit...)
 	s.mu.RUnlock()
 	for _, r := range records {
+		if r.Seq < from {
+			continue
+		}
 		if err := fn(r); err != nil {
 			return err
 		}
@@ -318,16 +338,35 @@ func (s *MemStore) SaveDetectionEvent(_ context.Context, e *AlertEvent) error {
 	return nil
 }
 
-func (s *MemStore) ListRecentAlerts(_ context.Context, since time.Time) ([]AlertEvent, error) {
+func (s *MemStore) ListRecentAlerts(_ context.Context, since time.Time, limit int) ([]AlertEvent, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = 1000
+	}
 	var result []AlertEvent
-	for _, e := range s.detectEvents {
-		if e.CreatedAt.After(since) {
+	for i := len(s.detectEvents) - 1; i >= 0 && len(result) < limit; i-- {
+		if e := s.detectEvents[i]; e.CreatedAt.After(since) {
 			result = append(result, e)
 		}
 	}
 	return result, nil
+}
+
+func (s *MemStore) DeleteDetectionEventsBefore(_ context.Context, t time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.detectEvents[:0]
+	var n int64
+	for _, e := range s.detectEvents {
+		if e.CreatedAt.Before(t) {
+			n++
+			continue
+		}
+		kept = append(kept, e)
+	}
+	s.detectEvents = kept
+	return n, nil
 }
 
 func (s *MemStore) Close() error { return nil }

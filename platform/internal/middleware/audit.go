@@ -14,14 +14,15 @@ import (
 // route pattern). Routes whose handlers record richer events themselves set
 // auth.AuditedKey and are skipped here.
 var routeEvents = map[string]string{
-	"POST /api/v1/assets/:id/claim":       "asset.claim",
-	"POST /api/v1/alerts/:id/:action":     "alert.action",
-	"PUT /api/v1/rules/:id":               "rule.update",
-	"POST /api/v1/rules/:id/hit":          "rule.hit",
-	"POST /api/v1/detect/access":          "detect.record",
-	"GET /api/v1/admin/audit-logs":        "audit.query",
-	"GET /api/v1/admin/audit-logs/verify": "audit.verify",
-	"GET /api/v1/admin/audit-logs/export": "audit.export",
+	"POST /api/v1/assets/:id/claim":             "asset.claim",
+	"POST /api/v1/alerts/:id/:action":           "alert.action",
+	"PUT /api/v1/rules/:id":                     "rule.update",
+	"POST /api/v1/rules/:id/hit":                "rule.hit",
+	"POST /api/v1/detect/access":                "detect.record",
+	"GET /api/v1/admin/audit-logs":              "audit.query",
+	"GET /api/v1/admin/audit-logs/verify":       "audit.verify",
+	"GET /api/v1/admin/audit-logs/export":       "audit.export",
+	"POST /api/v1/admin/audit-logs/verify-full": "audit.verify_full_start",
 }
 
 // Audit records state-changing requests, plus reads of the audit trail

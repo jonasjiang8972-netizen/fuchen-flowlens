@@ -4,7 +4,7 @@ import { DownloadOutlined, ReloadOutlined, SafetyCertificateOutlined, SearchOutl
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { adminService } from '../../services/admin'
-import type { AuditQuery, AuditRecord, VerifyResult } from '../../services/admin'
+import type { AuditQuery, AuditRecord, FullVerifyStatus, VerifyResult } from '../../services/admin'
 import { DEMO, errorMessage } from '../../services/http'
 
 export const eventLabels: Record<string, string> = {
@@ -13,7 +13,7 @@ export const eventLabels: Record<string, string> = {
   'user.disable': '停用账号', 'user.unlock': '解锁账号', 'user.lock': '账号锁定', 'user.reset_password': '重置口令',
   'user.auto_disable': '长期未登录自动停用', 'user.bootstrap': '创建初始账号',
   'policy.update': '修改安全策略', 'access.denied': '越权访问被拒绝',
-  'audit.query': '查询审计日志', 'audit.verify': '校验审计完整性', 'audit.export': '导出审计日志', 'audit.purge': '清理过期审计日志',
+  'audit.query': '查询审计日志', 'audit.verify': '校验审计完整性', 'audit.verify_full': '全量校验审计完整性', 'audit.verify_full_start': '发起全量校验', 'audit.export': '导出审计日志', 'audit.purge': '清理过期审计日志',
   'rule.update': '修改检测策略', 'rule.hit': '规则命中登记', 'alert.action': '告警处置', 'asset.claim': '认领资产',
   'detect.record': '登记检测样本', 'agent.register': '采集器注册',
 }
@@ -22,7 +22,7 @@ const eventFilters = [
   { value: 'auth.', label: '登录与口令' },
   { value: 'user.', label: '账号管理' },
   { value: 'policy.', label: '安全策略' },
-  { value: 'access.denied', label: '越权访问' },
+  { value: 'access.', label: '越权访问' },
   { value: 'audit.', label: '审计操作' },
   { value: 'rule.', label: '检测策略' },
   { value: 'alert.', label: '告警处置' },
@@ -37,6 +37,8 @@ const PAGE = 50
 export default function AuditLogs() {
   const [rows, setRows] = useState<AuditRecord[]>([])
   const [total, setTotal] = useState(0)
+  const [totalCapped, setTotalCapped] = useState(false)
+  const [full, setFull] = useState<FullVerifyStatus | null>(null)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [username, setUsername] = useState('')
@@ -62,6 +64,7 @@ export default function AuditLogs() {
       const res = await adminService.audit(query(p))
       setRows(res.items)
       setTotal(res.total)
+      setTotalCapped(!!res.total_capped)
       setPage(p)
     } catch (err) {
       message.error(errorMessage(err))
@@ -70,6 +73,25 @@ export default function AuditLogs() {
     }
   }
   useEffect(() => { load(1) }, [])
+
+  // Full verification runs in the background; poll while it is running.
+  const loadFull = () => adminService.fullVerifyStatus().then(setFull).catch(() => {})
+  useEffect(() => { loadFull() }, [])
+  useEffect(() => {
+    if (!full?.running) return
+    const t = setInterval(loadFull, 2000)
+    return () => clearInterval(t)
+  }, [full?.running])
+
+  const startFull = async () => {
+    try {
+      const res = await adminService.startFullVerify()
+      setFull(res.status)
+      message.info(res.started ? '已开始全量校验，完成后结果会显示在此处' : '全量校验正在进行中')
+    } catch (err) {
+      message.error(errorMessage(err))
+    }
+  }
 
   const runVerify = async () => {
     setVerifying(true)
@@ -123,19 +145,30 @@ export default function AuditLogs() {
         </div>
         <Space>
           <Button icon={<SafetyCertificateOutlined />} loading={verifying} onClick={runVerify}>校验完整性</Button>
+          <Button loading={full?.running} onClick={startFull}>{full?.running ? `全量校验中（${(full.checked || 0).toLocaleString()} 条）` : '全量校验（后台）'}</Button>
           <Button icon={<DownloadOutlined />} onClick={exportCsv}>导出 CSV</Button>
         </Space>
       </div>
 
       {verify && (verify.ok ? (
         <Alert type="success" showIcon closable onClose={() => setVerify(null)}
-          message={`哈希链完整：已校验 ${verify.checked} 条记录（序号 ${verify.first_seq}–${verify.last_seq}），未发现修改或删除。`} />
+          message={verify.mode === 'incremental'
+            ? `哈希链完整：已校验上次检查点之后的 ${verify.checked} 条记录（序号 ${verify.first_seq}–${verify.last_seq}），未发现修改或删除。`
+            : `哈希链完整：已校验全部 ${verify.checked} 条记录（序号 ${verify.first_seq}–${verify.last_seq}），未发现修改或删除。`} />
       ) : (
         <Alert type="error" showIcon closable onClose={() => setVerify(null)}
           message={`完整性校验失败：自序号 ${verify.broken_at} 起哈希链断裂`} description={verify.reason} />
       ))}
 
-      <Card title={`审计记录 (${total})`}>
+      {full?.last && (
+        <div className="muted" style={{ fontSize: 12 }}>
+          上次全量校验：{dayjs(full.last.finished_at).format('YYYY-MM-DD HH:mm')} ·{' '}
+          {full.last.ok ? `完整（${full.last.checked.toLocaleString()} 条）` : <span style={{ color: 'var(--fl-critical)' }}>发现问题：{full.last.reason}</span>}
+          。“校验完整性”只检查上次检查点之后的新记录，全量校验每天自动执行一次。
+        </div>
+      )}
+
+      <Card title={`审计记录 (${totalCapped ? `${total.toLocaleString()}+` : total.toLocaleString()})`}>
         <div className="filter-bar">
           <Input allowClear prefix={<SearchOutlined />} placeholder="操作人用户名" value={username} onChange={e => setUsername(e.target.value)} style={{ width: 160 }} onPressEnter={() => load(1)} />
           <Select allowClear placeholder="事件类别" value={eventType} onChange={setEventType} options={eventFilters} style={{ width: 140 }} />
@@ -151,7 +184,10 @@ export default function AuditLogs() {
           dataSource={rows}
           loading={loading}
           scroll={{ x: 1250 }}
-          pagination={{ current: page, pageSize: PAGE, total, showSizeChanger: false, onChange: p => load(p) }}
+          pagination={{
+            current: page, pageSize: PAGE, total, showSizeChanger: false, onChange: p => load(p),
+            showTotal: () => (totalCapped ? `匹配超过 ${total.toLocaleString()} 条，仅显示最新的 ${total.toLocaleString()} 条，请缩小时间范围或增加筛选条件` : ''),
+          }}
           expandable={{
             expandedRowRender: (r: AuditRecord) => (
               <Descriptions size="small" column={1} bordered>

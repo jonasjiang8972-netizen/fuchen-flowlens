@@ -40,52 +40,9 @@ CREATE TABLE IF NOT EXISTS fl_settings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS fl_audit_logs (
-    seq        BIGSERIAL PRIMARY KEY,
-    time       TIMESTAMPTZ NOT NULL,
-    user_id    TEXT NOT NULL DEFAULT '',
-    username   TEXT NOT NULL DEFAULT '',
-    role       TEXT NOT NULL DEFAULT '',
-    source_ip  TEXT NOT NULL DEFAULT '',
-    console    TEXT NOT NULL DEFAULT '',
-    event_type TEXT NOT NULL,
-    target     TEXT NOT NULL DEFAULT '',
-    result     TEXT NOT NULL,
-    reason     TEXT NOT NULL DEFAULT '',
-    detail     TEXT NOT NULL DEFAULT '',
-    method     TEXT NOT NULL DEFAULT '',
-    path       TEXT NOT NULL DEFAULT '',
-    prev_hash  TEXT NOT NULL,
-    hash       TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS fl_audit_time_idx ON fl_audit_logs (time);
-CREATE INDEX IF NOT EXISTS fl_audit_user_idx ON fl_audit_logs (lower(username));
-CREATE INDEX IF NOT EXISTS fl_audit_event_idx ON fl_audit_logs (event_type);
+-- fl_audit_logs and fl_detection_events are partitioned by month and are
+-- created and migrated in pg_partition.go.
 
--- The audit trail is append-only: block UPDATE outright. DELETE is allowed
--- only for retention purges, which the application restricts to records
--- older than the configured retention period (>= 180 days).
-CREATE OR REPLACE FUNCTION fl_audit_no_update() RETURNS trigger AS $$
-BEGIN
-    RAISE EXCEPTION 'fl_audit_logs is append-only';
-END;
-$$ LANGUAGE plpgsql;
-DROP TRIGGER IF EXISTS fl_audit_no_update ON fl_audit_logs;
-CREATE TRIGGER fl_audit_no_update BEFORE UPDATE ON fl_audit_logs
-    FOR EACH ROW EXECUTE FUNCTION fl_audit_no_update();
-
-CREATE TABLE IF NOT EXISTS fl_detection_events (
-    id         TEXT PRIMARY KEY,
-    type       TEXT NOT NULL,
-    severity   TEXT NOT NULL,
-    title      TEXT NOT NULL,
-    detail     TEXT NOT NULL DEFAULT '',
-    source_ip  TEXT NOT NULL DEFAULT '',
-    account_id TEXT NOT NULL DEFAULT '',
-    risk_score INTEGER NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
-);
-CREATE INDEX IF NOT EXISTS fl_detection_created_idx ON fl_detection_events (created_at);
 
 -- Business records (assets, alerts, detection rules, collectors) stored as
 -- JSON documents; the platform keeps a working copy in memory.

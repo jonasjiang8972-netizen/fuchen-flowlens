@@ -195,6 +195,8 @@ func TestSeparationOfDuties(t *testing.T) {
 		{"GET", "/api/v1/admin/system/info", "", []string{"sys_admin"}},
 		{"GET", "/api/v1/admin/audit-logs", "", []string{"audit_admin"}},
 		{"GET", "/api/v1/admin/audit-logs/verify", "", []string{"audit_admin"}},
+		{"GET", "/api/v1/admin/audit-logs/verify-full", "", []string{"audit_admin"}},
+		{"POST", "/api/v1/admin/audit-logs/verify-full", "{}", []string{"audit_admin"}},
 	}
 	for _, tc := range cases {
 		for role, token := range tok {
@@ -346,5 +348,20 @@ func TestAgentRoutesRequireClientCertWhenCAConfigured(t *testing.T) {
 	r := setupRouter(srv, config{agentToken: "s3cret", tlsClientCA: "/etc/flowlens/agent-ca.pem"})
 	if code := agentPost(r, "/api/v1/ingest/batch", "s3cret"); code != http.StatusUnauthorized {
 		t.Fatalf("valid token without client certificate: got %d, want 401", code)
+	}
+}
+
+func TestAuditPagingBeyondCapIsRejected(t *testing.T) {
+	h := newHarness(t, "")
+	tok := h.tokens()
+	if w := h.do(http.MethodGet, "/api/v1/admin/audit-logs?limit=50&offset=9950", tok["audit_admin"], ""); w.Code != http.StatusOK {
+		t.Fatalf("last allowed page: %d %s", w.Code, w.Body.String())
+	}
+	if w := h.do(http.MethodGet, "/api/v1/admin/audit-logs?limit=50&offset=9951", tok["audit_admin"], ""); w.Code != http.StatusBadRequest {
+		t.Fatalf("beyond cap: got %d, want 400", w.Code)
+	}
+	w := h.do(http.MethodGet, "/api/v1/admin/audit-logs/verify", tok["audit_admin"], "")
+	if !strings.Contains(w.Body.String(), `"ok":true`) || !strings.Contains(w.Body.String(), `"mode"`) {
+		t.Fatalf("verify: %s", w.Body.String())
 	}
 }

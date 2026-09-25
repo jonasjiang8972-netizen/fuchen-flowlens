@@ -126,6 +126,10 @@ cd fuchen-flowlens
 - **会话：** 空闲 15 分钟、最长 8 小时；退出、停用、改角色后立即失效。会话令牌只存在 HttpOnly Cookie 中，数据库只保存其 SM3 哈希。
 - **审计：** 记录登录、账号与权限变更、策略变更、越权访问和 API 安全操作；只能追加，SM3 哈希链防篡改，保留不少于 180 天，可导出 CSV。
 
+### 数据库性能
+
+审计日志和检测事件按月分区，每种筛选组合都有对应索引。实测 3000 万行、完全冷缓存下，管理后台的所有查询都在 13 毫秒以内；按读页数模型推算，TB 级数据在 SSD 上可在 2 秒内返回。实测数据、推算依据、部署要求和复现方法见 [docs/DATABASE_PERFORMANCE.md](docs/DATABASE_PERFORMANCE.md)。
+
 ### HTTPS
 
 - **前端：** `web/nginx.conf` 为 HTTP（开发或由上游负载均衡终结 TLS）；`web/nginx-https.conf` 为 HTTPS（TLS 1.2/1.3、HSTS、HTTP 跳转 HTTPS）。两者都带 CSP 等安全响应头。

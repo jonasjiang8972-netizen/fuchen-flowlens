@@ -50,6 +50,7 @@ func (s *PlatformServer) StartMaintenance(ctx context.Context) {
 					logger.L().Warnf("session cleanup: %v", err)
 				}
 			case <-retention.C:
+				s.dailyMaintenance(ctx)
 				days := s.iam.Policy(ctx).AuditRetentionDays
 				n, err := s.audit.Purge(ctx, time.Duration(days)*24*time.Hour)
 				if err != nil {
@@ -63,6 +64,24 @@ func (s *PlatformServer) StartMaintenance(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// dailyMaintenance pre-creates partitions, applies retention to detection
+// events and runs the background full audit verification.
+func (s *PlatformServer) dailyMaintenance(ctx context.Context) {
+	if pe, ok := s.store.(interface{ EnsurePartitions(context.Context) error }); ok {
+		if err := pe.EnsurePartitions(ctx); err != nil {
+			logger.L().Errorf("create partitions: %v", err)
+		}
+	}
+	days := s.iam.Policy(ctx).AuditRetentionDays
+	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	if n, err := s.store.DeleteDetectionEventsBefore(ctx, cutoff); err != nil {
+		logger.L().Warnf("detection event retention: %v", err)
+	} else if n > 0 {
+		logger.L().Infof("removed %d detection events older than %d days", n, days)
+	}
+	s.audit.StartFullVerify()
 }
 
 // respondErr maps service errors to HTTP responses.
@@ -277,8 +296,9 @@ func (s *PlatformServer) UpdatePolicyHandler(c *gin.Context) {
 
 func auditQueryFrom(c *gin.Context) storage.AuditQuery {
 	q := storage.AuditQuery{
-		Username: c.Query("username"), EventType: c.Query("event_type"),
-		Result: c.Query("result"), Console: c.Query("console"),
+		// Only filters backed by indexes are accepted (see storage
+		// auditIndexes); results are "success" or "failure".
+		Username: c.Query("username"), EventType: c.Query("event_type"), Result: c.Query("result"),
 	}
 	q.Limit, _ = strconv.Atoi(c.DefaultQuery("limit", "100"))
 	q.Offset, _ = strconv.Atoi(c.Query("offset"))
@@ -294,8 +314,16 @@ func auditQueryFrom(c *gin.Context) storage.AuditQuery {
 	return q
 }
 
+// ListAuditHandler pages through at most the newest MaxAuditCount matches;
+// beyond that the operator narrows the time range or adds filters. The
+// total is reported as MaxAuditCount with total_capped set.
 func (s *PlatformServer) ListAuditHandler(c *gin.Context) {
-	records, total, err := s.audit.List(c.Request.Context(), auditQueryFrom(c))
+	q := auditQueryFrom(c)
+	if q.Offset+q.Limit > storage.MaxAuditCount {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("只能翻看最新的 %d 条匹配记录，请缩小时间范围或增加筛选条件", storage.MaxAuditCount)})
+		return
+	}
+	records, total, err := s.audit.List(c.Request.Context(), q)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -303,16 +331,32 @@ func (s *PlatformServer) ListAuditHandler(c *gin.Context) {
 	if records == nil {
 		records = []storage.AuditRecord{}
 	}
-	c.JSON(http.StatusOK, gin.H{"total": total, "items": records})
+	capped := total > storage.MaxAuditCount
+	if capped {
+		total = storage.MaxAuditCount
+	}
+	c.JSON(http.StatusOK, gin.H{"total": total, "total_capped": capped, "items": records})
 }
 
+// VerifyAuditHandler checks the records added since the last verified
+// checkpoint; its cost does not grow with the size of the trail.
 func (s *PlatformServer) VerifyAuditHandler(c *gin.Context) {
-	res, err := s.audit.Verify(c.Request.Context())
+	res, err := s.audit.VerifyIncremental(c.Request.Context())
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, res)
+}
+
+// StartFullVerifyHandler starts a background verification of the whole trail.
+func (s *PlatformServer) StartFullVerifyHandler(c *gin.Context) {
+	started := s.audit.StartFullVerify()
+	c.JSON(http.StatusAccepted, gin.H{"started": started, "status": s.audit.FullVerifyStatus(c.Request.Context())})
+}
+
+func (s *PlatformServer) FullVerifyStatusHandler(c *gin.Context) {
+	c.JSON(http.StatusOK, s.audit.FullVerifyStatus(c.Request.Context()))
 }
 
 // ExportAuditHandler streams matching records as CSV (UTF-8 with BOM so

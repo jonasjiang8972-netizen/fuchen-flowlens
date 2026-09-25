@@ -27,7 +27,7 @@ func stores(t *testing.T) map[string]Store {
 			}
 		}
 		// Truncate is allowed for tests only; the trigger blocks UPDATE, not TRUNCATE.
-		if _, err := pg.pool.Exec(context.Background(), "TRUNCATE fl_audit_logs RESTART IDENTITY"); err != nil {
+		if _, err := pg.pool.Exec(context.Background(), "TRUNCATE fl_audit_logs; DELETE FROM fl_audit_head"); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { pg.Close() })
@@ -195,9 +195,42 @@ func TestAuditContract(t *testing.T) {
 			if fmt.Sprint(walked) != "[1 2 3 4 5]" {
 				t.Fatalf("walk order %v", walked)
 			}
-			n, _ := st.DeleteAuditBefore(ctx, ts("2026-03-01T11:00:00Z"))
-			if n != 2 {
-				t.Fatalf("purged %d, want 2", n)
+		})
+	}
+}
+
+// Retention may keep more than asked (PostgreSQL drops whole monthly
+// partitions) but must never delete a record at or after the cutoff.
+func TestAuditRetentionContract(t *testing.T) {
+	for name, st := range stores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			for _, at := range []string{"2026-01-15T10:00:00Z", "2026-02-15T10:00:00Z", "2026-03-15T10:00:00Z"} {
+				r := &AuditRecord{Time: ts(at), EventType: "x.y", Result: "success"}
+				if err := st.AppendAudit(ctx, r, func(p string) string { return "h" + at }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			remaining := func() []time.Time {
+				var out []time.Time
+				_ = st.WalkAudit(ctx, func(r AuditRecord) error { out = append(out, r.Time); return nil })
+				return out
+			}
+			// Mid-February cutoff: January goes, nothing from Feb 15 on may go.
+			if _, err := st.DeleteAuditBefore(ctx, ts("2026-02-10T00:00:00Z")); err != nil {
+				t.Fatal(err)
+			}
+			left := remaining()
+			if len(left) != 2 || left[0].Before(ts("2026-02-10T00:00:00Z")) {
+				t.Fatalf("after Feb 10 cutoff: %v", left)
+			}
+			// Cutoff at a month boundary removes February exactly.
+			n, err := st.DeleteAuditBefore(ctx, ts("2026-03-01T00:00:00Z"))
+			if err != nil || n != 1 {
+				t.Fatalf("Mar 1 cutoff purged %d, %v; want 1", n, err)
+			}
+			if left := remaining(); len(left) != 1 || !left[0].Equal(ts("2026-03-15T10:00:00Z")) {
+				t.Fatalf("after Mar 1 cutoff: %v", left)
 			}
 		})
 	}
@@ -283,6 +316,47 @@ func TestDocumentContract(t *testing.T) {
 			}
 			if err := st.SaveDocuments(ctx, "asset", nil); err != nil {
 				t.Fatalf("empty save: %v", err)
+			}
+		})
+	}
+}
+
+func TestAuditCategoryFilterAndCappedCount(t *testing.T) {
+	for name, st := range stores(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			base := time.Now().Add(-time.Hour)
+			n := MaxAuditCount + 5
+			if pg, ok := st.(*PGStore); ok {
+				// Bulk insert: appending 10k records one by one is slow.
+				if _, err := pg.pool.Exec(ctx, `INSERT INTO fl_audit_logs (seq, time, username, event_type, result, prev_hash, hash)
+					SELECT i, $1::timestamptz + make_interval(secs => i), 'bulk', CASE WHEN i % 2 = 0 THEN 'auth.login' ELSE 'user.create' END,
+					'success', '', md5(i::text) FROM generate_series(1, $2::int) i`, base, n); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				for i := 1; i <= n; i++ {
+					typ := map[bool]string{true: "auth.login", false: "user.create"}[i%2 == 0]
+					r := &AuditRecord{Time: base.Add(time.Duration(i) * time.Second), Username: "bulk", EventType: typ, Result: "success"}
+					_ = st.AppendAudit(ctx, r, func(string) string { return "h" })
+				}
+			}
+			recs, total, err := st.ListAudit(ctx, AuditQuery{Limit: 10})
+			if err != nil || total != MaxAuditCount+1 || len(recs) != 10 {
+				t.Fatalf("unfiltered: total=%d len=%d err=%v; want capped %d", total, len(recs), err, MaxAuditCount+1)
+			}
+			if !recs[0].Time.After(recs[9].Time) {
+				t.Fatal("not newest first")
+			}
+			// "auth." is the category, "auth.login" the exact type; "user.cr" matches nothing.
+			for q, want := range map[string]int{"auth.": (n) / 2, "auth.login": n / 2, "user.": n - n/2, "user.cr": 0, "auth.logout": 0} {
+				_, total, err := st.ListAudit(ctx, AuditQuery{EventType: q, Limit: 1})
+				if want > MaxAuditCount {
+					want = MaxAuditCount + 1
+				}
+				if err != nil || total != want {
+					t.Errorf("event_type %q: total=%d err=%v, want %d", q, total, err, want)
+				}
 			}
 		})
 	}

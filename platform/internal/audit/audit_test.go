@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,8 +33,15 @@ func (s *sliceStore) ListAudit(context.Context, storage.AuditQuery) ([]storage.A
 	return s.recs, len(s.recs), nil
 }
 
-func (s *sliceStore) WalkAudit(_ context.Context, fn func(storage.AuditRecord) error) error {
+func (s *sliceStore) WalkAudit(ctx context.Context, fn func(storage.AuditRecord) error) error {
+	return s.WalkAuditFrom(ctx, 0, fn)
+}
+
+func (s *sliceStore) WalkAuditFrom(_ context.Context, from int64, fn func(storage.AuditRecord) error) error {
 	for _, r := range s.recs {
+		if r.Seq < from {
+			continue
+		}
 		if err := fn(r); err != nil {
 			return err
 		}
@@ -146,5 +154,140 @@ func TestHashDependsOnEveryField(t *testing.T) {
 	}
 	if len(h) != 64 || strings.Trim(h, "0123456789abcdef") != "" {
 		t.Fatalf("hash %q is not 64 hex chars (SM3)", h)
+	}
+}
+
+// memSettings is a goroutine-safe in-memory SettingsStore.
+type memSettings struct {
+	mu sync.Mutex
+	m  map[string][]byte
+}
+
+func newSettings() *memSettings { return &memSettings{m: map[string][]byte{}} }
+
+func (s *memSettings) GetSetting(_ context.Context, k string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.m[k]
+	if !ok {
+		return nil, storage.ErrNotFound
+	}
+	return v, nil
+}
+
+func (s *memSettings) PutSetting(_ context.Context, k string, v []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.m[k] = v
+	return nil
+}
+
+// countingStore records how many records a walk visited.
+type countingStore struct {
+	*sliceStore
+	visited int
+}
+
+func (c *countingStore) WalkAuditFrom(ctx context.Context, from int64, fn func(storage.AuditRecord) error) error {
+	return c.sliceStore.WalkAuditFrom(ctx, from, func(r storage.AuditRecord) error {
+		c.visited++
+		return fn(r)
+	})
+}
+
+func addRecords(t *testing.T, svc *Service, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		if err := svc.Record(context.Background(), storage.AuditRecord{Username: "u", EventType: "user.create"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestIncrementalVerifyChecksOnlyNewRecords(t *testing.T) {
+	cs := &countingStore{sliceStore: &sliceStore{}}
+	svc := New(cs)
+	svc.SetSettings(newSettings())
+	addRecords(t, svc, 1000)
+
+	res, err := svc.VerifyIncremental(context.Background())
+	if err != nil || !res.OK || res.Mode != "full" || res.Checked != 1000 {
+		t.Fatalf("first run (no checkpoint): %+v %v", res, err)
+	}
+	addRecords(t, svc, 10)
+	cs.visited = 0
+	res, err = svc.VerifyIncremental(context.Background())
+	if err != nil || !res.OK || res.Mode != "incremental" || res.Checked != 11 || res.FirstSeq != 1000 {
+		t.Fatalf("incremental run: %+v %v", res, err)
+	}
+	if cs.visited > 20 {
+		t.Fatalf("incremental run visited %d records, want about 11", cs.visited)
+	}
+}
+
+func TestIncrementalVerifyDetectsTampering(t *testing.T) {
+	for name, tamper := range map[string]func(st *sliceStore){
+		"checkpoint record modified": func(st *sliceStore) { st.recs[99].Detail = "forged"; st.recs[99].Hash = Hash(st.recs[99]) },
+		"new record modified":        func(st *sliceStore) { st.recs[103].Username = "x" },
+		"new record deleted":         func(st *sliceStore) { st.recs = append(st.recs[:102], st.recs[103:]...) },
+		"checkpoint record deleted":  func(st *sliceStore) { st.recs = append(st.recs[:99], st.recs[100:]...) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			st := &sliceStore{}
+			svc := New(st)
+			svc.SetSettings(newSettings())
+			addRecords(t, svc, 100)
+			if res, _ := svc.VerifyIncremental(context.Background()); !res.OK {
+				t.Fatal("baseline not OK")
+			}
+			addRecords(t, svc, 5)
+			tamper(st)
+			res, err := svc.VerifyIncremental(context.Background())
+			if err != nil || res.OK || res.Reason == "" {
+				t.Fatalf("tampering not detected: %+v %v", res, err)
+			}
+		})
+	}
+}
+
+func TestIncrementalVerifyAfterRetentionFallsBackToFull(t *testing.T) {
+	st := &sliceStore{}
+	svc := New(st)
+	svc.SetSettings(newSettings())
+	addRecords(t, svc, 50)
+	svc.VerifyIncremental(context.Background()) // checkpoint at seq 50
+	addRecords(t, svc, 10)
+	st.recs = st.recs[55:] // retention purged everything up to seq 55
+	res, err := svc.VerifyIncremental(context.Background())
+	if err != nil || !res.OK || res.Mode != "full" || res.FirstSeq != 56 {
+		t.Fatalf("after purge: %+v %v", res, err)
+	}
+}
+
+func TestBackgroundFullVerify(t *testing.T) {
+	st := &sliceStore{}
+	svc := New(st)
+	settings := newSettings()
+	svc.SetSettings(settings)
+	addRecords(t, svc, 200)
+	if !svc.StartFullVerify() {
+		t.Fatal("full verify did not start")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for svc.FullVerifyStatus(context.Background()).Running {
+		if time.Now().After(deadline) {
+			t.Fatal("full verify did not finish")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	st2 := svc.FullVerifyStatus(context.Background())
+	if st2.Last == nil || !st2.Last.OK || st2.Last.Checked != 200 {
+		t.Fatalf("status: %+v", st2)
+	}
+	// The result is persisted for a restarted service.
+	fresh := New(st)
+	fresh.SetSettings(settings)
+	if last := fresh.FullVerifyStatus(context.Background()).Last; last == nil || last.Checked != 200 {
+		t.Fatalf("persisted result: %+v", last)
 	}
 }

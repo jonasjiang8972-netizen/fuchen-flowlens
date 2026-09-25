@@ -10,19 +10,17 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 //go:embed pg_schema.sql
 var pgSchema string
 
-// auditLockKey serialises audit appends across platform instances so the
-// hash chain stays linear.
-const auditLockKey = 0x464c4155 // "FLAU"
-
 // PGStore persists data in PostgreSQL.
 type PGStore struct {
 	pool *pgxpool.Pool
+	pm   *partitionManager
 }
 
 // NewPGStore connects to dsn and applies the schema.
@@ -39,7 +37,35 @@ func NewPGStore(ctx context.Context, dsn string) (*PGStore, error) {
 		pool.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	return &PGStore{pool: pool}, nil
+	pm := &partitionManager{pool: pool, have: make(map[string]bool)}
+	if err := migratePartitioned(ctx, pool, pm); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("partitioned tables: %w", err)
+	}
+	if err := pm.ensureAhead(ctx, time.Now()); err != nil {
+		pool.Close()
+		return nil, err
+	}
+	return &PGStore{pool: pool, pm: pm}, nil
+}
+
+// EnsurePartitionRange creates the monthly partitions of both partitioned
+// tables covering [from, to], e.g. before importing historical records.
+func (s *PGStore) EnsurePartitionRange(ctx context.Context, from, to time.Time) error {
+	for _, t := range partitionedTables {
+		for m := monthStart(from); !m.After(to); m = m.AddDate(0, 1, 0) {
+			if err := s.pm.ensure(ctx, t.name, m); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// EnsurePartitions creates upcoming monthly partitions; the platform calls
+// it daily.
+func (s *PGStore) EnsurePartitions(ctx context.Context) error {
+	return s.pm.ensureAhead(ctx, time.Now())
 }
 
 func (s *PGStore) Close() error {
@@ -224,32 +250,48 @@ func scanAudit(row pgx.Row) (AuditRecord, error) {
 	return r, err
 }
 
+// AppendAudit locks the chain head row, so appends from any number of
+// platform instances form one linear chain. Record time is kept monotonic
+// (never earlier than the previous record) so time order equals sequence
+// order, which the time-ordered indexes and partitions rely on.
 func (s *PGStore) AppendAudit(ctx context.Context, rec *AuditRecord, chain func(prevHash string) string) error {
+	if err := s.pm.ensure(ctx, "fl_audit_logs", rec.Time); err != nil {
+		return err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, auditLockKey); err != nil {
+	// Take the head lock; the first append creates the row.
+	if _, err := tx.Exec(ctx, `INSERT INTO fl_audit_head (id, seq, hash, time) VALUES (1, 0, '', '-infinity')
+		ON CONFLICT (id) DO NOTHING`); err != nil {
 		return err
 	}
-	var prev string
-	err = tx.QueryRow(ctx, `SELECT hash FROM fl_audit_logs ORDER BY seq DESC LIMIT 1`).Scan(&prev)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	var headSeq int64
+	var headHash string
+	var headTime time.Time
+	var headInf pgtype.InfinityModifier
+	var ht pgtype.Timestamptz
+	if err := tx.QueryRow(ctx, `SELECT seq, hash, time FROM fl_audit_head WHERE id = 1 FOR UPDATE`).Scan(&headSeq, &headHash, &ht); err != nil {
 		return err
 	}
-	// Reserve the sequence number first: it is part of the hashed content.
-	if err := tx.QueryRow(ctx, `SELECT nextval(pg_get_serial_sequence('fl_audit_logs', 'seq'))`).Scan(&rec.Seq); err != nil {
-		return err
+	headTime, headInf = ht.Time, ht.InfinityModifier
+	if headInf == pgtype.Finite && rec.Time.Before(headTime) {
+		rec.Time = headTime
 	}
-	rec.PrevHash = prev
-	rec.Hash = chain(prev)
+	rec.Seq = headSeq + 1
+	rec.PrevHash = headHash
+	rec.Hash = chain(headHash)
 	_, err = tx.Exec(ctx, `INSERT INTO fl_audit_logs (`+auditColumns+`)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
 		rec.Seq, rec.Time, rec.UserID, rec.Username, rec.Role, rec.SourceIP, rec.Console, rec.EventType,
 		rec.Target, rec.Result, rec.Reason, rec.Detail, rec.Method, rec.Path, rec.PrevHash, rec.Hash)
 	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE fl_audit_head SET seq = $1, hash = $2, time = $3 WHERE id = 1`, rec.Seq, rec.Hash, rec.Time); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -263,10 +305,18 @@ func auditWhere(q AuditQuery) (string, []any) {
 		conds = append(conds, fmt.Sprintf(cond, len(args)))
 	}
 	if q.Username != "" {
-		add("lower(username) = lower($%d)", q.Username)
+		add("username_lower = lower($%d)", q.Username)
 	}
 	if q.EventType != "" {
-		add("event_type LIKE $%d", strings.NewReplacer("%", `\%`, "_", `\_`).Replace(q.EventType)+"%")
+		// "auth." selects a category, anything else an exact event type;
+		// both are equality lookups on an indexed column.
+		if cat, ok := categoryOf(q.EventType); ok {
+			add("event_category = $%d", cat)
+		} else {
+			// Constrain the category too, so the category indexes apply.
+			add("event_category = $%d", strings.SplitN(q.EventType, ".", 2)[0])
+			add("event_type = $%d", q.EventType)
+		}
 	}
 	if q.Result != "" {
 		add("result = $%d", q.Result)
@@ -286,10 +336,14 @@ func auditWhere(q AuditQuery) (string, []any) {
 	return " WHERE " + strings.Join(conds, " AND "), args
 }
 
+// ListAudit returns one page, newest first. The total is exact up to
+// MaxAuditCount and reported as MaxAuditCount+1 beyond it: counting every
+// match of a broad filter over billions of rows cannot be done in seconds.
 func (s *PGStore) ListAudit(ctx context.Context, q AuditQuery) ([]AuditRecord, int, error) {
 	where, args := auditWhere(q)
 	var total int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM fl_audit_logs`+where, args...).Scan(&total); err != nil {
+	if err := s.pool.QueryRow(ctx, fmt.Sprintf(`SELECT count(*) FROM (SELECT 1 FROM fl_audit_logs%s LIMIT %d) m`,
+		where, MaxAuditCount+1), args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	limit := q.Limit
@@ -297,8 +351,8 @@ func (s *PGStore) ListAudit(ctx context.Context, q AuditQuery) ([]AuditRecord, i
 		limit = 100
 	}
 	args = append(args, limit, q.Offset)
-	rows, err := s.pool.Query(ctx, fmt.Sprintf(`SELECT `+auditColumns+` FROM fl_audit_logs%s ORDER BY seq DESC LIMIT $%d OFFSET $%d`,
-		where, len(args)-1, len(args)), args...)
+	rows, err := s.pool.Query(ctx, fmt.Sprintf(`SELECT `+auditColumns+` FROM fl_audit_logs%s
+		ORDER BY time DESC, seq DESC LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args)), args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -315,29 +369,46 @@ func (s *PGStore) ListAudit(ctx context.Context, q AuditQuery) ([]AuditRecord, i
 }
 
 func (s *PGStore) WalkAudit(ctx context.Context, fn func(AuditRecord) error) error {
-	rows, err := s.pool.Query(ctx, `SELECT `+auditColumns+` FROM fl_audit_logs ORDER BY seq`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		r, err := scanAudit(rows)
+	return s.WalkAuditFrom(ctx, 0, fn)
+}
+
+// WalkAuditFrom visits records with seq >= from in sequence order. It reads
+// in batches so a walk over billions of rows never holds one huge query.
+func (s *PGStore) WalkAuditFrom(ctx context.Context, from int64, fn func(AuditRecord) error) error {
+	const batch = 10000
+	next := from
+	for {
+		rows, err := s.pool.Query(ctx, `SELECT `+auditColumns+` FROM fl_audit_logs WHERE seq >= $1 ORDER BY seq LIMIT $2`, next, batch)
 		if err != nil {
 			return err
 		}
-		if err := fn(r); err != nil {
+		n := 0
+		for rows.Next() {
+			r, err := scanAudit(rows)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			n++
+			next = r.Seq + 1
+			if err := fn(r); err != nil {
+				rows.Close()
+				return err
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
 			return err
 		}
+		if n < batch {
+			return nil
+		}
 	}
-	return rows.Err()
 }
 
+// DeleteAuditBefore drops monthly partitions lying entirely before t.
 func (s *PGStore) DeleteAuditBefore(ctx context.Context, t time.Time) (int64, error) {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM fl_audit_logs WHERE time < $1`, t)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
+	return s.pm.dropPartitionsBefore(ctx, "fl_audit_logs", t)
 }
 
 // ─── Documents ─────────────────────────────────────────────────
@@ -384,16 +455,23 @@ func (s *PGStore) SaveDocuments(ctx context.Context, kind string, docs map[strin
 // ─── Detection events ──────────────────────────────────────────
 
 func (s *PGStore) SaveDetectionEvent(ctx context.Context, e *AlertEvent) error {
+	if err := s.pm.ensure(ctx, "fl_detection_events", e.CreatedAt); err != nil {
+		return err
+	}
 	_, err := s.pool.Exec(ctx, `INSERT INTO fl_detection_events
 		(id, type, severity, title, detail, source_ip, account_id, risk_score, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (created_at, id) DO NOTHING`,
 		e.ID, e.Type, e.Severity, e.Title, e.Detail, e.SourceIP, e.AccountID, e.RiskScore, e.CreatedAt)
 	return err
 }
 
-func (s *PGStore) ListRecentAlerts(ctx context.Context, since time.Time) ([]AlertEvent, error) {
+// ListRecentAlerts returns up to limit events after since, newest first.
+func (s *PGStore) ListRecentAlerts(ctx context.Context, since time.Time, limit int) ([]AlertEvent, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
 	rows, err := s.pool.Query(ctx, `SELECT id, type, severity, title, detail, source_ip, account_id, risk_score, created_at
-		FROM fl_detection_events WHERE created_at > $1 ORDER BY created_at`, since)
+		FROM fl_detection_events WHERE created_at > $1 ORDER BY created_at DESC LIMIT $2`, since, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -407,4 +485,9 @@ func (s *PGStore) ListRecentAlerts(ctx context.Context, since time.Time) ([]Aler
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// DeleteDetectionEventsBefore drops monthly partitions lying entirely before t.
+func (s *PGStore) DeleteDetectionEventsBefore(ctx context.Context, t time.Time) (int64, error) {
+	return s.pm.dropPartitionsBefore(ctx, "fl_detection_events", t)
 }

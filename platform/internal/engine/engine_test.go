@@ -20,7 +20,7 @@ func (c *fakeClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func detectionEvents(t *testing.T, store storage.Store, typ string) []storage.AlertEvent {
 	t.Helper()
-	all, err := store.ListRecentAlerts(context.Background(), time.Time{})
+	all, err := store.ListRecentAlerts(context.Background(), time.Time{}, 100000)
 	if err != nil {
 		t.Fatal(err)
 	}
