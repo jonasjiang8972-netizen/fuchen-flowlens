@@ -25,10 +25,13 @@ func TestClientSendsAgentToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(config.ManagementConfig{
+	c, err := NewClient(config.ManagementConfig{
 		PlatformEndpoint: strings.TrimPrefix(srv.URL, "http://"),
 		AuthToken:        "s3cret",
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	if err := c.Register(ctx, &AgentRegistration{AgentID: "a1"}); err != nil {
 		t.Fatalf("register: %v", err)

@@ -87,6 +87,7 @@ func main() {
 	srv := server.NewPlatformServer(store)
 	srv.DemoMode = cfg.demo
 	srv.SecureCookies = cfg.secureCookies
+	srv.SetRedactionKey(cfg.agentToken)
 
 	if !cfg.demo {
 		res, err := srv.IAM().Bootstrap(ctx, os.Getenv("FLOWLENS_ADMIN_PASSWORD"))

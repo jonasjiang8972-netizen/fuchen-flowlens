@@ -18,6 +18,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/mgmt"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/normalizer"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/redact"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
 )
@@ -82,7 +83,10 @@ func main() {
 	monitor := health.NewMonitor(cfg.Agent.ID, cfg.Management)
 	monitor.SetCollectMode(string(collectMode))
 
-	mgrClient := mgmt.NewClient(cfg.Management)
+	mgrClient, err := mgmt.NewClient(cfg.Management)
+	if err != nil {
+		log.Fatalf("Failed to set up platform connection: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -93,7 +97,7 @@ func main() {
 
 	go monitor.Start(ctx)
 
-	go processEvents(ctx, coll, norm, monitor, mgrClient, cfg.Agent.ID, cfg.Kafka.BatchSize, time.Duration(cfg.Kafka.FlushIntervalMs)*time.Millisecond)
+	go processEvents(ctx, coll, norm, redact.New(cfg.Management.AuthToken), monitor, mgrClient, cfg.Agent.ID, cfg.Kafka.BatchSize, time.Duration(cfg.Kafka.FlushIntervalMs)*time.Millisecond)
 
 	hostname, _ := os.Hostname()
 	go func() {
@@ -169,7 +173,7 @@ func createCollector(mode detector.CollectMode) (collector.Collector, error) {
 	}
 }
 
-func processEvents(ctx context.Context, coll collector.Collector, norm *normalizer.Normalizer, mon *health.Monitor, mgr *mgmt.Client, agentID string, batchSize int, flushInterval time.Duration) {
+func processEvents(ctx context.Context, coll collector.Collector, norm *normalizer.Normalizer, red *redact.Redactor, mon *health.Monitor, mgr *mgmt.Client, agentID string, batchSize int, flushInterval time.Duration) {
 	log := logger.L()
 	events := coll.Events()
 	if batchSize <= 0 {
@@ -218,6 +222,9 @@ func processEvents(ctx context.Context, coll collector.Collector, norm *normaliz
 			if normalized.Application.PathNormalized == "" {
 				normalized.Application.PathNormalized = normalized.Application.PathRaw
 			}
+			// Remove credentials and mask personal data before anything
+			// leaves the host (after path normalization, which needs raw IDs).
+			red.Event(normalized)
 			if normalized.AgentID == "" {
 				normalized.AgentID = agentID
 			}

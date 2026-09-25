@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/redact"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/audit"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
@@ -30,6 +31,7 @@ type PlatformServer struct {
 	authEngine     *engine.AuthFailureEngine
 	bflaEngine     *engine.BFLAEngine
 	ingestPipeline *ingest.Pipeline
+	redactor       *redact.Redactor
 	DemoMode       bool
 	// SecureCookies sets the Secure flag on the session cookie; enable it
 	// whenever the console is served over HTTPS.
@@ -58,6 +60,7 @@ func NewPlatformServer(store storage.Store) *PlatformServer {
 		bolaEngine:   engine.NewBOLAEngine(store),
 		authEngine:   engine.NewAuthFailureEngine(store),
 		bflaEngine:   engine.NewBFLAEngine(store),
+		redactor:     redact.New(""),
 	}
 	srv.ingestPipeline = ingest.NewPipeline(20000, srv.processIngestEvent)
 	return srv
@@ -279,7 +282,13 @@ func (s *PlatformServer) IngestMetricsHandler(c *gin.Context) {
 	c.JSON(200, s.ingestPipeline.Metrics())
 }
 
+// SetRedactionKey sets the key for credential fingerprints; use the agent
+// token so platform and collector fingerprints match.
+func (s *PlatformServer) SetRedactionKey(key string) { s.redactor = redact.New(key) }
+
 func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIEvent) {
+	// Safety net: collectors redact before sending, but never rely on it.
+	s.redactor.Event(&evt)
 	normalizeIngestEvent(&evt)
 	principal := resolvePrincipal(evt)
 	sensitiveFields := classifySensitiveFields(evt)

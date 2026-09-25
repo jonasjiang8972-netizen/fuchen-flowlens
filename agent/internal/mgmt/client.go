@@ -3,9 +3,12 @@ package mgmt
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/config"
@@ -44,13 +47,37 @@ type Client struct {
 	agentID    string
 }
 
-func NewClient(cfg config.ManagementConfig) *Client {
-	return &Client{
-		cfg: cfg,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+// NewClient builds the platform client. With use_tls it verifies the
+// platform against tls_ca_path (or the system roots) and presents
+// tls_cert_path / tls_key_path as a client certificate when set.
+func NewClient(cfg config.ManagementConfig) (*Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if cfg.UseTLS {
+		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
+		if cfg.TLSCAPath != "" {
+			pem, err := os.ReadFile(cfg.TLSCAPath)
+			if err != nil {
+				return nil, fmt.Errorf("read platform CA: %w", err)
+			}
+			pool := x509.NewCertPool()
+			if !pool.AppendCertsFromPEM(pem) {
+				return nil, fmt.Errorf("no certificates in %s", cfg.TLSCAPath)
+			}
+			tlsCfg.RootCAs = pool
+		}
+		if cfg.TLSCertPath != "" || cfg.TLSKeyPath != "" {
+			cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+			if err != nil {
+				return nil, fmt.Errorf("load client certificate: %w", err)
+			}
+			tlsCfg.Certificates = []tls.Certificate{cert}
+		}
+		transport.TLSClientConfig = tlsCfg
 	}
+	return &Client{
+		cfg:        cfg,
+		httpClient: &http.Client{Timeout: 10 * time.Second, Transport: transport},
+	}, nil
 }
 
 func (c *Client) Register(ctx context.Context, reg *AgentRegistration) error {

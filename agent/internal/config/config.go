@@ -64,8 +64,9 @@ type ManagementConfig struct {
 	HeartbeatTimeout    time.Duration `yaml:"heartbeat_timeout_s"`
 	ReconnectBackoffMax time.Duration `yaml:"reconnect_backoff_max_s"`
 	UseTLS              bool          `yaml:"use_tls"`
-	TLSCertPath         string        `yaml:"tls_cert_path"`
-	TLSCAPath           string        `yaml:"tls_ca_path"`
+	TLSCertPath         string        `yaml:"tls_cert_path"` // client certificate for mutual TLS
+	TLSKeyPath          string        `yaml:"tls_key_path"`  // client private key for mutual TLS
+	TLSCAPath           string        `yaml:"tls_ca_path"`   // CA bundle that signed the platform certificate
 	AuthToken           string        `yaml:"auth_token"`
 }
 

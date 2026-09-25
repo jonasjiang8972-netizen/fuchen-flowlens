@@ -339,3 +339,12 @@ func TestCORSOnlyAllowsConfiguredOrigins(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentRoutesRequireClientCertWhenCAConfigured(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	srv := server.NewPlatformServer(storage.NewMemStore())
+	r := setupRouter(srv, config{agentToken: "s3cret", tlsClientCA: "/etc/flowlens/agent-ca.pem"})
+	if code := agentPost(r, "/api/v1/ingest/batch", "s3cret"); code != http.StatusUnauthorized {
+		t.Fatalf("valid token without client certificate: got %d, want 401", code)
+	}
+}
