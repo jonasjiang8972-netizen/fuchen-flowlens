@@ -85,28 +85,65 @@ cd fuchen-flowlens
 # TODO: 开发环境搭建指南
 ```
 
+### 两个控制台与角色
+
+登录后按账号角色进入不同的控制台。每个账号只能有一个角色，平台不设能绕过权限检查的超级管理员（等保三级“三权分立”）：
+
+| 角色 | 登录后进入 | 职责 |
+|------|-----------|------|
+| 系统管理员 `sys_admin` | 系统管理后台 | 账号、安全策略、采集器、系统设置；**不能**查看审计日志或操作 API 安全业务 |
+| 审计管理员 `audit_admin` | 系统管理后台 | 只能查询、校验、导出审计日志 |
+| 安全管理员 `sec_admin` | API 安全管理平台 | 检测策略、告警处置、资产归属 |
+| 安全分析员 `analyst` | API 安全管理平台 | 告警研判处置、资产认领，不能改检测策略 |
+| 只读用户 `viewer` | API 安全管理平台 | 只能查看 |
+
+管理后台接口统一在 `/api/v1/admin/*`，其余为 API 安全接口。每个接口都校验权限，越权访问被拒绝并记入审计日志。
+
+首次启动（用户表为空）时自动创建 `sysadmin`、`auditadmin`、`secadmin` 三个账号，初始口令取自 `FLOWLENS_ADMIN_PASSWORD`；未设置时随机生成并在平台日志中打印一次。三个账号首次登录都必须修改口令。其他人员的账号由系统管理员在“用户管理”中创建。
+
 ### 安全配置
 
-平台启动时读取以下环境变量，生产环境三项都必须设置：
+平台启动时读取以下环境变量（也可用同名启动参数）：
 
 | 变量 | 作用 | 未设置时 |
 |------|------|----------|
-| `FLOWLENS_JWT_SECRET` | 用户登录 token 的签名密钥，至少 32 字节 | 每次启动随机生成，重启后所有人需要重新登录 |
-| `FLOWLENS_ADMIN_PASSWORD` | 内置账号 `admin`、`sec-ops` 的密码 | 使用开发默认密码 `admin123`，启动时会打印警告 |
-| `FLOWLENS_AGENT_TOKEN` | Agent 认证密钥（见下文） | Agent 接口一律拒绝 |
-| `FLOWLENS_CORS_ORIGINS` | 允许跨域访问的前端地址，逗号分隔，如 `https://console.example.com` | 不允许跨域（自带控制台通过同源代理访问，不受影响） |
+| `FLOWLENS_DB_DSN` | PostgreSQL 连接串，存放账号、会话、安全策略、审计日志、检测事件 | 使用内存存储并告警：重启即丢失，**不得用于生产** |
+| `FLOWLENS_ADMIN_PASSWORD` | 首次启动时三个初始账号的初始口令 | 随机生成并打印一次 |
+| `FLOWLENS_AGENT_TOKEN` | Agent 认证密钥，同时作为凭证指纹的密钥（见下文） | Agent 接口一律拒绝 |
+| `FLOWLENS_TLS_CERT` / `FLOWLENS_TLS_KEY` | 平台直接提供 HTTPS 的证书和私钥 | 以 HTTP 提供服务，须置于 HTTPS 反向代理之后 |
+| `FLOWLENS_TLS_CLIENT_CA` | Agent 客户端证书的 CA；设置后 Agent 接口必须出示有效客户端证书（双向 TLS） | 不校验客户端证书 |
+| `FLOWLENS_COOKIE_SECURE` | 控制台经 HTTPS 访问时设为 `true`，会话 Cookie 带 Secure 标记（配置了 TLS 证书时自动开启） | 不带 Secure |
+| `FLOWLENS_TRUSTED_PROXIES` | 可信反向代理的 IP/网段，只信任它们的 `X-Forwarded-For` | 不信任任何代理，按连接地址记录来源 IP |
+| `FLOWLENS_CORS_ORIGINS` | 允许跨域访问的前端地址，逗号分隔 | 不允许跨域（自带控制台同源访问，不受影响） |
 
-```bash
-export FLOWLENS_JWT_SECRET=$(openssl rand -hex 32)
-export FLOWLENS_ADMIN_PASSWORD='<强密码>'
-```
+使用 `deploy/docker-compose.yaml` 时，把 `deploy/.env.example` 复制为 `deploy/.env` 并填写各项密钥。
 
-### Agent 认证
+平台自身的口令、登录失败锁定、会话超时、审计保留期等策略，由系统管理员在管理后台“安全策略”中配置，取值不能低于合规下限：
 
-Agent 调用平台的注册、心跳和流量上报接口（`/agents/register`、`/agents/:id/heartbeat`、`/ingest/*`）时，使用共享密钥认证，通过请求头 `X-Agent-Token` 发送，不走用户登录 JWT。
+- **口令：** 至少 8 位、3 类字符，禁止重复最近 5 次，90 天强制更换，初始口令首次登录必须修改。
+- **登录：** 连续失败 5 次锁定 30 分钟，单 IP 每分钟最多 20 次，90 天未登录自动停用。
+- **会话：** 空闲 15 分钟、最长 8 小时；退出、停用、改角色后立即失效。会话令牌只存在 HttpOnly Cookie 中，数据库只保存其 SM3 哈希。
+- **审计：** 记录登录、账号与权限变更、策略变更、越权访问和 API 安全操作；只能追加，SM3 哈希链防篡改，保留不少于 180 天，可导出 CSV。
 
-- **平台**：设置环境变量 `FLOWLENS_AGENT_TOKEN`（或启动参数 `-agent-token`）。未设置时，这些接口一律拒绝（`-demo` 模式除外）。
-- **Agent**：在配置文件中设置 `management.auth_token`，或设置环境变量 `FLOWLENS_AGENT_TOKEN`（优先级更高）。两端的值必须一致。
+### HTTPS
+
+- **前端：** `web/nginx.conf` 为 HTTP（开发或由上游负载均衡终结 TLS）；`web/nginx-https.conf` 为 HTTPS（TLS 1.2/1.3、HSTS、HTTP 跳转 HTTPS）。两者都带 CSP 等安全响应头。
+- **国密：** SM2/SM4 国密 TLS（TLCP）需要基于铜锁（Tongsuo）的 nginx 构建，例如 Tengine NTLS；标准 nginx 只支持国际算法套件。
+
+### Agent 认证与数据脱敏
+
+Agent 调用注册、心跳和流量上报接口时，通过请求头 `X-Agent-Token` 发送共享密钥：
+
+- **平台：** 设置 `FLOWLENS_AGENT_TOKEN`。未设置时这些接口一律拒绝（`-demo` 模式除外）。
+- **Agent：** 在配置中设置 `management.auth_token`，或设置环境变量 `FLOWLENS_AGENT_TOKEN`（优先）。两端必须一致。
+- **双向 TLS：** Agent 配置 `use_tls`、`tls_ca_path`（平台证书的 CA）、`tls_cert_path` / `tls_key_path`（客户端证书）；平台配置 `FLOWLENS_TLS_CLIENT_CA`。
+
+Agent 在数据离开主机前脱敏，平台接收时再做一次兜底（JR/T 0171-2020）：
+
+- **凭证类请求头**（Authorization、Cookie、API Key 等）替换为带密钥的 SM3 指纹，凭证本身不出主机，但同一调用方仍可识别。
+- **口令、PIN、CVV、token 等字段**直接删除。
+- **身份证号、手机号、银行卡号**掩码，如 `110***********4514`、`138****8000`、`622202*********0128`。
+- **字段名保留**，敏感数据识别不受影响。
 
 ```bash
 export FLOWLENS_AGENT_TOKEN=$(openssl rand -hex 32)

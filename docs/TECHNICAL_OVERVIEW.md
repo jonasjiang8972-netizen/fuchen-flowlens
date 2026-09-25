@@ -162,10 +162,12 @@ Agent 入口位于 `agent/cmd/main.go`。当前流程：
 
 | API | 方法 | 说明 |
 |-----|------|------|
-| `/api/v1/auth/login` | POST | 登录并签发 JWT |
+| `/api/v1/auth/login` | POST | 登录，建立服务端会话（HttpOnly Cookie） |
+| `/api/v1/auth/me`、`/auth/logout`、`/auth/password` | GET/POST | 当前账号、退出、修改口令 |
+| `/api/v1/admin/*` | 多种 | 系统管理后台：用户、角色、安全策略、采集器、系统信息、审计日志 |
 | `/api/v1/health` | GET | 健康检查 |
-| `/api/v1/agents` | GET | 采集器列表 |
-| `/api/v1/agents/:id` | GET | 采集器详情 |
+| `/api/v1/admin/agents`、`/admin/agents/:id` | GET | 采集器列表与详情（系统管理员） |
+| `/api/v1/coverage/agents` | GET | 采集覆盖汇总（API 安全侧） |
 | `/api/v1/agents/register` | POST | Agent 注册 |
 | `/api/v1/agents/:id/heartbeat` | POST | Agent 心跳 |
 | `/api/v1/assets` | GET | API 资产列表 |
@@ -315,20 +317,15 @@ sequenceDiagram
 
 当前后端具备：
 
-- JWT 登录。
-- RBAC 中间件。
-- 审计中间件。
-- Demo 模式下可关闭鉴权。
-- 默认内存用户：`admin / admin123`，角色为 `super_admin`。密码可通过 `FLOWLENS_ADMIN_PASSWORD` 修改，生产环境必须设置；JWT 签名密钥通过 `FLOWLENS_JWT_SECRET` 配置。
+- **角色：** 五种内置角色，按三权分立划分：系统管理员、审计管理员进入系统管理后台；安全管理员、安全分析员、只读用户进入 API 安全管理平台。每个接口按权限点校验，越权访问会被审计。
+- **会话：** 服务端会话，令牌只存 SM3 哈希；空闲超时、绝对有效期，退出或停用后立即失效；HttpOnly + SameSite=Strict Cookie，写操作需带 CSRF 头。
+- **口令与登录：** 口令策略（长度、字符类别、历史、有效期）、初始口令强制修改、登录失败锁定、单 IP 限速、长期未登录自动停用、账号有效期。
+- **审计：** 结构化审计日志，SM3 哈希链防篡改，数据库触发器禁止修改，保留不少于 180 天，支持校验与导出。
+- **存储：** PostgreSQL 持久化；未配置时退回内存存储（仅限开发）。
+- **Agent：** 令牌认证，可叠加双向 TLS；Agent 端和平台端两层脱敏。
+- **Demo 模式：** 可关闭登录，仅用于演示。
 
-生产化建议：
-
-- 移除或强制变更默认密码。
-- 接入企业 IAM / SSO。
-- JWT Secret 外置到安全配置。
-- 所有 Agent 与平台通信启用 mTLS 或签名。
-- 对 request/response body 做采样、脱敏、加密和访问审计。
-- 将规则更新、告警处置、资产认领纳入审计日志。
+尚未完成的生产化事项见 `docs/COMPLIANCE_GAP_ANALYSIS.md` 第 8 节。
 
 ## 10. 当前技术边界
 
