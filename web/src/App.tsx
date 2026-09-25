@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Avatar, Breadcrumb, Button, Layout, Menu, Space, Tag } from 'antd'
+import { lazy, Suspense, useState, useEffect } from 'react'
+import { Avatar, Breadcrumb, Button, Layout, Menu, Space, Spin, Tag } from 'antd'
 import {
   AlertOutlined,
   ApiOutlined,
@@ -20,24 +20,24 @@ import {
   WarningOutlined,
 } from '@ant-design/icons'
 import Login from './pages/Login'
-import Dashboard from './pages/Dashboard'
-import Assets from './pages/Assets'
-import AssetDetail from './pages/AssetDetail'
-import Alerts from './pages/Alerts'
-import AlertDetail from './pages/AlertDetail'
-import Agents from './pages/Agents'
-import AgentDetail from './pages/AgentDetail'
-import Rules from './pages/Rules'
-import DataGovernance from './pages/DataGovernance/DataGovernance'
-import RiskOps from './pages/RiskOps/RiskOps'
-import Settings from './pages/Settings/Settings'
-import FlowMap from './pages/FlowMap'
-import AIGovernance from './pages/AIGovernance'
-import IdentityCenter from './pages/IdentityCenter'
-import GovernanceDashboard from './pages/GovernanceDashboard'
-import ContractCenter from './pages/ContractCenter'
-import CoverageCenter from './pages/CoverageCenter'
-import WorkOrderCenter from './pages/WorkOrderCenter'
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const Assets = lazy(() => import('./pages/Assets'))
+const AssetDetail = lazy(() => import('./pages/AssetDetail'))
+const Alerts = lazy(() => import('./pages/Alerts'))
+const AlertDetail = lazy(() => import('./pages/AlertDetail'))
+const Agents = lazy(() => import('./pages/Agents'))
+const AgentDetail = lazy(() => import('./pages/AgentDetail'))
+const Rules = lazy(() => import('./pages/Rules'))
+const DataGovernance = lazy(() => import('./pages/DataGovernance/DataGovernance'))
+const RiskOps = lazy(() => import('./pages/RiskOps/RiskOps'))
+const Settings = lazy(() => import('./pages/Settings/Settings'))
+const FlowMap = lazy(() => import('./pages/FlowMap'))
+const AIGovernance = lazy(() => import('./pages/AIGovernance'))
+const IdentityCenter = lazy(() => import('./pages/IdentityCenter'))
+const GovernanceDashboard = lazy(() => import('./pages/GovernanceDashboard'))
+const ContractCenter = lazy(() => import('./pages/ContractCenter'))
+const CoverageCenter = lazy(() => import('./pages/CoverageCenter'))
+const WorkOrderCenter = lazy(() => import('./pages/WorkOrderCenter'))
 
 type PageKey = 'dashboard' | 'assets' | 'asset-detail' | 'alerts' | 'alert-detail'
   | 'agents' | 'agent-detail' | 'data-gov' | 'risk-ops' | 'settings' | 'rules'
@@ -202,7 +202,9 @@ export default function App() {
           </Space>
         </Layout.Header>
         <Layout.Content className="flow-content">
-          {renderPage()}
+          <Suspense fallback={<div className="flow-page-loading"><Spin size="large" /></div>}>
+            {renderPage()}
+          </Suspense>
         </Layout.Content>
       </Layout>
     </Layout>

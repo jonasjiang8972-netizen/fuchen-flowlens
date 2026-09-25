@@ -1,5 +1,3 @@
-import ReactECharts from 'echarts-for-react'
-
 const API_BASE = '/api/v1'
 
 function getAuthHeaders(): Record<string, string> {

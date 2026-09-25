@@ -9,6 +9,18 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split large libraries into their own long-lived cached chunks
+        manualChunks: {
+          'vendor-antd': ['antd', '@ant-design/icons'],
+          'vendor-arco': ['@arco-design/web-react'],
+          'vendor-echarts': ['echarts', 'echarts-for-react'],
+        },
+      },
+    },
+  },
   server: {
     port: 3000,
     proxy: {

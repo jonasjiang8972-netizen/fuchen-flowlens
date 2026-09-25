@@ -941,3 +941,10 @@ body {
     flex-direction: column;
   }
 }
+
+.flow-page-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+}
