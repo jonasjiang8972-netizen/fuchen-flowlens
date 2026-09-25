@@ -2,23 +2,26 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/auth"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/audit"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/iam"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/ingest"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/service"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type PlatformServer struct {
 	store          storage.Store
+	iam            *iam.Service
+	audit          *audit.Service
 	agentService   *service.AgentService
 	assetService   *service.AssetService
 	alertService   *service.AlertService
@@ -28,6 +31,9 @@ type PlatformServer struct {
 	bflaEngine     *engine.BFLAEngine
 	ingestPipeline *ingest.Pipeline
 	DemoMode       bool
+	// SecureCookies sets the Secure flag on the session cookie; enable it
+	// whenever the console is served over HTTPS.
+	SecureCookies bool
 }
 
 type accessDetectionRequest struct {
@@ -40,8 +46,11 @@ type accessDetectionRequest struct {
 }
 
 func NewPlatformServer(store storage.Store) *PlatformServer {
+	auditSvc := audit.New(store)
 	srv := &PlatformServer{
 		store:        store,
+		audit:        auditSvc,
+		iam:          iam.NewService(store, auditSvc),
 		agentService: service.NewAgentService(),
 		assetService: service.NewAssetService(),
 		alertService: service.NewAlertService(),
@@ -59,39 +68,6 @@ func (s *PlatformServer) StartEngines(ctx context.Context) {
 	go s.authEngine.StartCleanup(ctx)
 	s.ingestPipeline.Start(ctx, 4)
 	logger.L().Info("Detection engines started")
-}
-
-// ─── Auth ──────────────────────────────────────────────────────
-
-func (s *PlatformServer) LoginHandler(c *gin.Context) {
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "invalid request"})
-		return
-	}
-	user, err := s.store.GetUserByUsername(context.Background(), req.Username)
-	if err != nil {
-		c.JSON(401, gin.H{"error": "invalid credentials"})
-		return
-	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		c.JSON(401, gin.H{"error": "invalid credentials"})
-		return
-	}
-	token, err := auth.GenerateToken(user.ID, user.Username, user.Role, user.TenantID)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "token generation failed"})
-		return
-	}
-	c.JSON(200, gin.H{
-		"token":  token,
-		"user":   user.Username,
-		"role":   user.Role,
-		"tenant": user.TenantID,
-	})
 }
 
 // ─── Agent Management ──────────────────────────────────────────
@@ -112,6 +88,7 @@ func (s *PlatformServer) RegisterAgentHandler(c *gin.Context) {
 		return
 	}
 	id := s.agentService.RegisterWithID(req.AgentID, req.Hostname, req.CollectMode, req.Cluster)
+	s.recordAgentEvent(c, "agent.register", id, fmt.Sprintf("hostname=%s mode=%s cluster=%s version=%s", req.Hostname, req.CollectMode, req.Cluster, req.AgentVersion))
 	c.JSON(200, gin.H{"agent_id": id, "status": "registered"})
 }
 
@@ -356,7 +333,6 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 
 	if evt.AgentID != "" {
 		s.agentService.UpdateHeartbeat(evt.AgentID)
-		_ = s.store.UpdateAgentHeartbeat(ctx, evt.AgentID, time.Now())
 	}
 }
 
@@ -718,18 +694,6 @@ func (s *PlatformServer) ListRuleCategoriesHandler(c *gin.Context) {
 }
 
 // ─── Audit Logs ────────────────────────────────────────────────
-
-func (s *PlatformServer) ListAuditLogsHandler(c *gin.Context) {
-	logs, err := s.store.ListAuditLogs(context.Background(), 100)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(200, gin.H{
-		"total": len(logs),
-		"items": logs,
-	})
-}
 
 // ─── Flow Map ──────────────────────────────────────────────────
 

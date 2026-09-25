@@ -34,3 +34,15 @@ func AgentTokenMiddleware(token string) gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// RequireClientCert rejects requests that did not present a client
+// certificate verified against the configured client CA (mutual TLS).
+func RequireClientCert() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.TLS == nil || len(c.Request.TLS.VerifiedChains) == 0 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "agent client certificate required"})
+			return
+		}
+		c.Next()
+	}
+}

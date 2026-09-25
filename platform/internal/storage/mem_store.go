@@ -3,231 +3,287 @@ package storage
 import (
 	"context"
 	"fmt"
-	"os"
+	"sort"
+	"strings"
 	"sync"
 	"time"
-
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/service"
-	"golang.org/x/crypto/bcrypt"
 )
 
+// MemStore keeps everything in process memory. It is for development and
+// tests only: all data, including the audit trail, is lost on restart.
 type MemStore struct {
 	mu           sync.RWMutex
-	agents       map[string]*service.Agent
-	assets       map[string]*service.Asset
-	alerts       map[string]*service.Alert
-	auditLogs    []AuditLog
-	users        map[string]*User
+	users        map[string]*User // by ID
+	sessions     map[string]*Session
+	settings     map[string][]byte
+	audit        []AuditRecord
+	auditSeq     int64
 	detectEvents []AlertEvent
 }
 
 func NewMemStore() *MemStore {
-	s := &MemStore{
-		agents:       make(map[string]*service.Agent),
-		assets:       make(map[string]*service.Asset),
-		alerts:       make(map[string]*service.Alert),
-		auditLogs:    make([]AuditLog, 0),
+	return &MemStore{
 		users:        make(map[string]*User),
+		sessions:     make(map[string]*Session),
+		settings:     make(map[string][]byte),
 		detectEvents: make([]AlertEvent, 0),
 	}
-	s.seedUsers()
-	return s
 }
 
-// DefaultAdminPassword is used for the seeded users when
-// FLOWLENS_ADMIN_PASSWORD is not set; it is only meant for local development.
-const DefaultAdminPassword = "admin123"
-
-func (s *MemStore) seedUsers() {
-	password := os.Getenv("FLOWLENS_ADMIN_PASSWORD")
-	if password == "" {
-		password = DefaultAdminPassword
+func cloneUser(u *User) *User {
+	c := *u
+	c.PasswordHistory = append([]string(nil), u.PasswordHistory...)
+	for _, p := range []**time.Time{&c.LockedUntil, &c.LastLoginAt, &c.ExpiresAt} {
+		if *p != nil {
+			t := **p
+			*p = &t
+		}
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	s.users["admin"] = &User{
-		ID: "user-001", Username: "admin",
-		PasswordHash: string(hash),
-		Role:         "super_admin", TenantID: "tenant-001",
-		CreatedAt: time.Now(),
-	}
-	s.users["sec-ops"] = &User{
-		ID: "user-002", Username: "sec-ops",
-		PasswordHash: string(hash),
-		Role:         "security_admin", TenantID: "tenant-001",
-		CreatedAt: time.Now(),
-	}
+	return &c
 }
 
-func (s *MemStore) SaveAgent(_ context.Context, a *service.Agent) error {
+// ─── Users ─────────────────────────────────────────────────────
+
+func (s *MemStore) CreateUser(_ context.Context, u *User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.agents[a.ID] = a
+	if _, ok := s.users[u.ID]; ok {
+		return fmt.Errorf("user id %s already exists", u.ID)
+	}
+	for _, existing := range s.users {
+		if strings.EqualFold(existing.Username, u.Username) {
+			return fmt.Errorf("username %s already exists", u.Username)
+		}
+	}
+	s.users[u.ID] = cloneUser(u)
 	return nil
 }
 
-func (s *MemStore) GetAgent(_ context.Context, id string) (*service.Agent, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	a, ok := s.agents[id]
-	if !ok {
-		return nil, fmt.Errorf("agent not found: %s", id)
-	}
-	return a, nil
-}
-
-func (s *MemStore) ListAgents(_ context.Context) ([]service.Agent, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]service.Agent, 0, len(s.agents))
-	for _, a := range s.agents {
-		result = append(result, *a)
-	}
-	return result, nil
-}
-
-func (s *MemStore) UpdateAgentHeartbeat(_ context.Context, id string, ts time.Time) error {
+func (s *MemStore) UpdateUser(_ context.Context, u *User) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if a, ok := s.agents[id]; ok {
-		a.LastHeartbeat = ts
+	if _, ok := s.users[u.ID]; !ok {
+		return ErrNotFound
 	}
+	s.users[u.ID] = cloneUser(u)
 	return nil
 }
 
-func (s *MemStore) UpdateAgentStatus(_ context.Context, id string, status string) error {
+func (s *MemStore) DeleteUser(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if a, ok := s.agents[id]; ok {
-		a.Status = status
+	if _, ok := s.users[id]; !ok {
+		return ErrNotFound
+	}
+	delete(s.users, id)
+	for h, sess := range s.sessions {
+		if sess.UserID == id {
+			delete(s.sessions, h)
+		}
 	}
 	return nil
-}
-
-func (s *MemStore) SaveAsset(_ context.Context, a *service.Asset) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.assets[a.ID] = a
-	return nil
-}
-
-func (s *MemStore) GetAsset(_ context.Context, id string) (*service.Asset, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	a, ok := s.assets[id]
-	if !ok {
-		return nil, fmt.Errorf("asset not found: %s", id)
-	}
-	return a, nil
-}
-
-func (s *MemStore) ListAssets(_ context.Context) ([]service.Asset, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]service.Asset, 0, len(s.assets))
-	for _, a := range s.assets {
-		result = append(result, *a)
-	}
-	return result, nil
-}
-
-func (s *MemStore) ClaimAsset(_ context.Context, id, owner string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	a, ok := s.assets[id]
-	if !ok {
-		return fmt.Errorf("asset not found: %s", id)
-	}
-	a.ClaimStatus = "claimed"
-	a.Owner = owner
-	return nil
-}
-
-func (s *MemStore) SaveAlert(_ context.Context, a *service.Alert) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.alerts[a.ID] = a
-	return nil
-}
-
-func (s *MemStore) GetAlert(_ context.Context, id string) (*service.Alert, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	a, ok := s.alerts[id]
-	if !ok {
-		return nil, fmt.Errorf("alert not found: %s", id)
-	}
-	return a, nil
-}
-
-func (s *MemStore) ListAlerts(_ context.Context) ([]service.Alert, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]service.Alert, 0, len(s.alerts))
-	for _, a := range s.alerts {
-		result = append(result, *a)
-	}
-	return result, nil
-}
-
-func (s *MemStore) UpdateAlertStatus(_ context.Context, id, status string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	a, ok := s.alerts[id]
-	if !ok {
-		return fmt.Errorf("alert not found: %s", id)
-	}
-	a.Status = status
-	return nil
-}
-
-func (s *MemStore) SaveAuditLog(_ context.Context, user, action, resource, detail string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.auditLogs = append(s.auditLogs, AuditLog{
-		ID:   fmt.Sprintf("log-%d", len(s.auditLogs)+1),
-		User: user, Action: action, Resource: resource,
-		Detail: detail, CreatedAt: time.Now(),
-	})
-	return nil
-}
-
-func (s *MemStore) ListAuditLogs(_ context.Context, limit int) ([]AuditLog, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	n := len(s.auditLogs)
-	if n > limit {
-		n = limit
-	}
-	return s.auditLogs[:n], nil
-}
-
-func (s *MemStore) SaveUser(_ context.Context, u *User) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.users[u.Username] = u
-	return nil
-}
-
-func (s *MemStore) GetUserByUsername(_ context.Context, username string) (*User, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	u, ok := s.users[username]
-	if !ok {
-		return nil, fmt.Errorf("user not found: %s", username)
-	}
-	return u, nil
 }
 
 func (s *MemStore) GetUserByID(_ context.Context, id string) (*User, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	u, ok := s.users[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return cloneUser(u), nil
+}
+
+func (s *MemStore) GetUserByUsername(_ context.Context, username string) (*User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	for _, u := range s.users {
-		if u.ID == id {
-			return u, nil
+		if strings.EqualFold(u.Username, username) {
+			return cloneUser(u), nil
 		}
 	}
-	return nil, fmt.Errorf("user not found: %s", id)
+	return nil, ErrNotFound
 }
+
+func (s *MemStore) ListUsers(_ context.Context) ([]User, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]User, 0, len(s.users))
+	for _, u := range s.users {
+		out = append(out, *cloneUser(u))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (s *MemStore) CountUsers(_ context.Context) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.users), nil
+}
+
+// ─── Sessions ──────────────────────────────────────────────────
+
+func (s *MemStore) CreateSession(_ context.Context, sess *Session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := *sess
+	s.sessions[sess.TokenHash] = &c
+	return nil
+}
+
+func (s *MemStore) GetSession(_ context.Context, tokenHash string) (*Session, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sess, ok := s.sessions[tokenHash]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	c := *sess
+	return &c, nil
+}
+
+func (s *MemStore) TouchSession(_ context.Context, tokenHash string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[tokenHash]; ok {
+		sess.LastSeenAt = at
+	}
+	return nil
+}
+
+func (s *MemStore) DeleteSession(_ context.Context, tokenHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sessions, tokenHash)
+	return nil
+}
+
+func (s *MemStore) DeleteUserSessions(_ context.Context, userID, keepHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for h, sess := range s.sessions {
+		if sess.UserID == userID && h != keepHash {
+			delete(s.sessions, h)
+		}
+	}
+	return nil
+}
+
+func (s *MemStore) DeleteExpiredSessions(_ context.Context, idleBefore, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for h, sess := range s.sessions {
+		if sess.LastSeenAt.Before(idleBefore) || !now.Before(sess.ExpiresAt) {
+			delete(s.sessions, h)
+		}
+	}
+	return nil
+}
+
+// ─── Settings ──────────────────────────────────────────────────
+
+func (s *MemStore) GetSetting(_ context.Context, key string) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v, ok := s.settings[key]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return append([]byte(nil), v...), nil
+}
+
+func (s *MemStore) PutSetting(_ context.Context, key string, value []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settings[key] = append([]byte(nil), value...)
+	return nil
+}
+
+// ─── Audit ─────────────────────────────────────────────────────
+
+func (s *MemStore) AppendAudit(_ context.Context, rec *AuditRecord, chain func(prevHash string) string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev := ""
+	if n := len(s.audit); n > 0 {
+		prev = s.audit[n-1].Hash
+	}
+	s.auditSeq++
+	rec.Seq = s.auditSeq
+	rec.PrevHash = prev
+	rec.Hash = chain(prev)
+	s.audit = append(s.audit, *rec)
+	return nil
+}
+
+func matchAudit(r AuditRecord, q AuditQuery) bool {
+	if q.Username != "" && !strings.EqualFold(r.Username, q.Username) {
+		return false
+	}
+	if q.EventType != "" && !strings.HasPrefix(r.EventType, q.EventType) {
+		return false
+	}
+	if q.Result != "" && r.Result != q.Result {
+		return false
+	}
+	if q.Console != "" && r.Console != q.Console {
+		return false
+	}
+	if !q.From.IsZero() && r.Time.Before(q.From) {
+		return false
+	}
+	if !q.To.IsZero() && !r.Time.Before(q.To) {
+		return false
+	}
+	return true
+}
+
+// ListAudit returns matching records newest first.
+func (s *MemStore) ListAudit(_ context.Context, q AuditQuery) ([]AuditRecord, int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var matched []AuditRecord
+	for i := len(s.audit) - 1; i >= 0; i-- {
+		if matchAudit(s.audit[i], q) {
+			matched = append(matched, s.audit[i])
+		}
+	}
+	total := len(matched)
+	if q.Offset > len(matched) {
+		q.Offset = len(matched)
+	}
+	matched = matched[q.Offset:]
+	if q.Limit > 0 && len(matched) > q.Limit {
+		matched = matched[:q.Limit]
+	}
+	return matched, total, nil
+}
+
+func (s *MemStore) WalkAudit(_ context.Context, fn func(AuditRecord) error) error {
+	s.mu.RLock()
+	records := append([]AuditRecord(nil), s.audit...)
+	s.mu.RUnlock()
+	for _, r := range records {
+		if err := fn(r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *MemStore) DeleteAuditBefore(_ context.Context, t time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := 0
+	for i < len(s.audit) && s.audit[i].Time.Before(t) {
+		i++
+	}
+	s.audit = append([]AuditRecord(nil), s.audit[i:]...)
+	return int64(i), nil
+}
+
+// ─── Detection events ──────────────────────────────────────────
 
 func (s *MemStore) SaveDetectionEvent(_ context.Context, e *AlertEvent) error {
 	s.mu.Lock()

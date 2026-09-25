@@ -9,7 +9,7 @@ services:
     environment:
       POSTGRES_DB: flowlens
       POSTGRES_USER: flowlens
-      POSTGRES_PASSWORD: flowlens_secret
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
     ports:
       - "5432:5432"
     volumes:
@@ -29,7 +29,7 @@ services:
     environment:
       CLICKHOUSE_DB: flowlens
       CLICKHOUSE_USER: flowlens
-      CLICKHOUSE_PASSWORD: flowlens_secret
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in deploy/.env}
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     healthcheck:
@@ -95,20 +95,23 @@ services:
       redis:
         condition: service_started
     environment:
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: flowlens
-      DB_USER: flowlens
-      DB_PASSWORD: flowlens_secret
+      # Accounts, sessions, security policy and the audit trail are stored here.
+      # Inside the compose network TLS is off; for an external database use sslmode=verify-full.
+      FLOWLENS_DB_DSN: postgres://flowlens:${POSTGRES_PASSWORD}@postgres:5432/flowlens?sslmode=disable
       KAFKA_BROKERS: kafka:29092
       REDIS_ADDR: redis:6379
       CLICKHOUSE_ADDR: clickhouse:9000
       ES_ADDR: http://elasticsearch:9200
       LOG_LEVEL: info
-      # Signing key for user login tokens (>= 32 bytes); random per start when empty
-      FLOWLENS_JWT_SECRET: ${FLOWLENS_JWT_SECRET:-}
-      # Password for the seeded admin / sec-ops users; defaults to admin123 when empty
+      # Initial password of the bootstrap accounts (sysadmin / auditadmin / secadmin),
+      # used only on first start; each must change it at first login. When empty a
+      # random password is generated and printed once in the platform log.
       FLOWLENS_ADMIN_PASSWORD: ${FLOWLENS_ADMIN_PASSWORD:-}
+      # Trust X-Forwarded-For only from the web container's network (real client IPs
+      # in audit records and login rate limits).
+      FLOWLENS_TRUSTED_PROXIES: ${FLOWLENS_TRUSTED_PROXIES:-172.16.0.0/12}
+      # Set to true when the console is served over HTTPS (Secure session cookie).
+      FLOWLENS_COOKIE_SECURE: ${FLOWLENS_COOKIE_SECURE:-false}
       # Shared secret agents send as X-Agent-Token; agent endpoints reject all requests when empty
       FLOWLENS_AGENT_TOKEN: ${FLOWLENS_AGENT_TOKEN:-}
       # Comma-separated origins allowed cross-origin; the bundled web console is same-origin

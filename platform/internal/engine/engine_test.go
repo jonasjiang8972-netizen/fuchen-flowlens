@@ -36,7 +36,7 @@ func detectionEvents(t *testing.T, store storage.Store, typ string) []storage.Al
 // ─── BOLA ──────────────────────────────────────────────────────
 
 func newBOLA() (*BOLAEngine, storage.Store, *fakeClock) {
-	store := storage.NewStore("mem")
+	store := storage.NewMemStore()
 	e := NewBOLAEngine(store)
 	clk := newFakeClock()
 	e.now = clk.Now
@@ -141,7 +141,7 @@ func TestBOLAAccountsAreIsolated(t *testing.T) {
 // ─── Auth failure / credential stuffing ────────────────────────
 
 func newAuth() (*AuthFailureEngine, storage.Store, *fakeClock) {
-	store := storage.NewStore("mem")
+	store := storage.NewMemStore()
 	e := NewAuthFailureEngine(store)
 	clk := newFakeClock()
 	e.now = clk.Now
@@ -222,7 +222,7 @@ func TestAuthConcurrentRecordAndEvaluate(t *testing.T) {
 // ─── BFLA ──────────────────────────────────────────────────────
 
 func newBFLA() (*BFLAEngine, storage.Store) {
-	store := storage.NewStore("mem")
+	store := storage.NewMemStore()
 	return NewBFLAEngine(store), store
 }
 
