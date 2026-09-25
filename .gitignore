@@ -16,7 +16,6 @@ build/
 *.exe
 *.test
 *.out
-go.sum
 
 # Rust
 /target/
