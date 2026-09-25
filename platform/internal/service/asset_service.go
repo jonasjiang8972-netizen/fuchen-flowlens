@@ -41,12 +41,16 @@ type RequestStats struct {
 	StatusCodeDist   map[string]int     `json:"status_code_distribution"`
 	HourlyCalls      []int              `json:"hourly_calls"`
 	TopCallers       []CallerInfo       `json:"top_callers"`
+
+	latencySamples int // events that reported a duration, for the running mean
 }
 
 type CallerInfo struct {
 	IP        string  `json:"ip"`
 	Calls     int     `json:"calls"`
 	ErrorRate float64 `json:"error_rate"`
+
+	errors int
 }
 
 type AssetDetail struct {
@@ -496,23 +500,24 @@ func (s *AssetService) ObserveEvent(evt shared.APIEvent, sensitiveFields []strin
 		status = "0"
 	}
 	a.RequestStats.StatusCodeDist[status]++
-	if int(evt.Application.StatusCode) >= 400 {
-		total := float64(maxInt(a.RequestStats.TotalCalls24h, 1))
-		errors := 0
-		for code, count := range a.RequestStats.StatusCodeDist {
-			if strings.HasPrefix(code, "4") || strings.HasPrefix(code, "5") {
-				errors += count
-			}
+	// Recompute on every event so successful calls bring the rate back down.
+	total := float64(maxInt(a.RequestStats.TotalCalls24h, 1))
+	errors := 0
+	for code, count := range a.RequestStats.StatusCodeDist {
+		if strings.HasPrefix(code, "4") || strings.HasPrefix(code, "5") {
+			errors += count
 		}
-		a.RequestStats.ErrorRate24h = float64(errors) / total * 100
 	}
+	a.RequestStats.ErrorRate24h = float64(errors) / total * 100
 	hour := now.Hour()
 	if len(a.RequestStats.HourlyCalls) < 24 {
 		a.RequestStats.HourlyCalls = make([]int, 24)
 	}
 	a.RequestStats.HourlyCalls[hour]++
 	if evt.Application.DurationMs > 0 {
-		a.RequestStats.AvgLatencyMs = (a.RequestStats.AvgLatencyMs + evt.Application.DurationMs) / 2
+		a.RequestStats.latencySamples++
+		n := float64(a.RequestStats.latencySamples)
+		a.RequestStats.AvgLatencyMs += (evt.Application.DurationMs - a.RequestStats.AvgLatencyMs) / n
 		if evt.Application.DurationMs > a.RequestStats.P95LatencyMs {
 			a.RequestStats.P95LatencyMs = evt.Application.DurationMs
 		}
@@ -606,21 +611,24 @@ func updateCallerStats(stats *RequestStats, ip string, isError bool) {
 		ip = "unknown"
 	}
 	for i := range stats.TopCallers {
-		if stats.TopCallers[i].IP == ip {
-			stats.TopCallers[i].Calls++
+		c := &stats.TopCallers[i]
+		if c.IP == ip {
+			c.Calls++
 			if isError {
-				stats.TopCallers[i].ErrorRate = (stats.TopCallers[i].ErrorRate + 100) / 2
+				c.errors++
 			}
+			c.ErrorRate = float64(c.errors) / float64(c.Calls) * 100
 			stats.UniqueCallers24h = len(stats.TopCallers)
 			return
 		}
 	}
 	if len(stats.TopCallers) < 5 {
-		errRate := 0.0
+		c := CallerInfo{IP: ip, Calls: 1}
 		if isError {
-			errRate = 100
+			c.errors = 1
+			c.ErrorRate = 100
 		}
-		stats.TopCallers = append(stats.TopCallers, CallerInfo{IP: ip, Calls: 1, ErrorRate: errRate})
+		stats.TopCallers = append(stats.TopCallers, c)
 	}
 	stats.UniqueCallers24h = len(stats.TopCallers)
 }
