@@ -85,6 +85,21 @@ cd fuchen-flowlens
 # TODO: 开发环境搭建指南
 ```
 
+### 安全配置
+
+平台启动时读取以下环境变量，生产环境三项都必须设置：
+
+| 变量 | 作用 | 未设置时 |
+|------|------|----------|
+| `FLOWLENS_JWT_SECRET` | 用户登录 token 的签名密钥，至少 32 字节 | 每次启动随机生成，重启后所有人需要重新登录 |
+| `FLOWLENS_ADMIN_PASSWORD` | 内置账号 `admin`、`sec-ops` 的密码 | 使用开发默认密码 `admin123`，启动时会打印警告 |
+| `FLOWLENS_AGENT_TOKEN` | Agent 认证密钥（见下文） | Agent 接口一律拒绝 |
+
+```bash
+export FLOWLENS_JWT_SECRET=$(openssl rand -hex 32)
+export FLOWLENS_ADMIN_PASSWORD='<强密码>'
+```
+
 ### Agent 认证
 
 Agent 调用平台的注册、心跳和流量上报接口（`/agents/register`、`/agents/:id/heartbeat`、`/ingest/*`）时，使用共享密钥认证，通过请求头 `X-Agent-Token` 发送，不走用户登录 JWT。

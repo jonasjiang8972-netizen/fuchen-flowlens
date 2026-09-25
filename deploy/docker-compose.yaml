@@ -105,6 +105,10 @@ services:
       CLICKHOUSE_ADDR: clickhouse:9000
       ES_ADDR: http://elasticsearch:9200
       LOG_LEVEL: info
+      # Signing key for user login tokens (>= 32 bytes); random per start when empty
+      FLOWLENS_JWT_SECRET: ${FLOWLENS_JWT_SECRET:-}
+      # Password for the seeded admin / sec-ops users; defaults to admin123 when empty
+      FLOWLENS_ADMIN_PASSWORD: ${FLOWLENS_ADMIN_PASSWORD:-}
       # Shared secret agents send as X-Agent-Token; agent endpoints reject all requests when empty
       FLOWLENS_AGENT_TOKEN: ${FLOWLENS_AGENT_TOKEN:-}
     restart: unless-stopped

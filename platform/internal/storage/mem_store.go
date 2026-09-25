@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -33,8 +34,16 @@ func NewMemStore() *MemStore {
 	return s
 }
 
+// DefaultAdminPassword is used for the seeded users when
+// FLOWLENS_ADMIN_PASSWORD is not set; it is only meant for local development.
+const DefaultAdminPassword = "admin123"
+
 func (s *MemStore) seedUsers() {
-	hash, _ := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+	password := os.Getenv("FLOWLENS_ADMIN_PASSWORD")
+	if password == "" {
+		password = DefaultAdminPassword
+	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	s.users["admin"] = &User{
 		ID: "user-001", Username: "admin",
 		PasswordHash: string(hash),

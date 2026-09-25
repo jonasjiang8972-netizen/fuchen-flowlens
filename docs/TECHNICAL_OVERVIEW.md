@@ -319,7 +319,7 @@ sequenceDiagram
 - RBAC 中间件。
 - 审计中间件。
 - Demo 模式下可关闭鉴权。
-- 默认内存用户：`admin / admin123`，角色为 `super_admin`。
+- 默认内存用户：`admin / admin123`，角色为 `super_admin`。密码可通过 `FLOWLENS_ADMIN_PASSWORD` 修改，生产环境必须设置；JWT 签名密钥通过 `FLOWLENS_JWT_SECRET` 配置。
 
 生产化建议：
 

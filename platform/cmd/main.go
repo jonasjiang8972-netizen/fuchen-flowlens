@@ -45,6 +45,14 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
+	if secret := os.Getenv("FLOWLENS_JWT_SECRET"); secret != "" {
+		if err := auth.SetJWTSecret(secret); err != nil {
+			log.Fatalf("Invalid FLOWLENS_JWT_SECRET: %v", err)
+		}
+	} else {
+		log.Warn("FLOWLENS_JWT_SECRET not set — using a random key; login sessions will not survive a restart")
+	}
+
 	store := storage.NewStore("mem")
 	srv := server.NewPlatformServer(store)
 	srv.DemoMode = demo
@@ -56,8 +64,13 @@ func main() {
 	log.Infof("Starting %s Platform v%s on port %d", version.Name, version.Version, port)
 	if demo {
 		log.Warn("Running in DEMO mode — authentication disabled")
-	} else if agentToken == "" {
-		log.Warn("FLOWLENS_AGENT_TOKEN not set — agent register/heartbeat/ingest requests will be rejected")
+	} else {
+		if os.Getenv("FLOWLENS_ADMIN_PASSWORD") == "" {
+			log.Warnf("FLOWLENS_ADMIN_PASSWORD not set — seeded users use the default password %q; set it before exposing the platform", storage.DefaultAdminPassword)
+		}
+		if agentToken == "" {
+			log.Warn("FLOWLENS_AGENT_TOKEN not set — agent register/heartbeat/ingest requests will be rejected")
+		}
 	}
 
 	router := setupRouter(srv, store, demo, agentToken)

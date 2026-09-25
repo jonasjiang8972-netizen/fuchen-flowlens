@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/rand"
 	"fmt"
 	"net/http"
 	"strings"
@@ -10,7 +11,27 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var jwtSecret = []byte("flowlens-secret-key-change-in-production")
+// jwtSecret starts as a random per-process key so tokens can never be signed
+// with a value known from source; SetJWTSecret installs a configured one.
+var jwtSecret = randomSecret()
+
+func randomSecret() []byte {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("generate jwt secret: %v", err))
+	}
+	return b
+}
+
+// SetJWTSecret configures the signing key. It must be called before serving
+// requests and rejects keys shorter than 32 bytes.
+func SetJWTSecret(secret string) error {
+	if len(secret) < 32 {
+		return fmt.Errorf("jwt secret must be at least 32 bytes, got %d", len(secret))
+	}
+	jwtSecret = []byte(secret)
+	return nil
+}
 
 type Claims struct {
 	UserID   string `json:"user_id"`
@@ -39,7 +60,7 @@ func GenerateToken(userID, username, role, tenantID string) (string, error) {
 func ParseToken(tokenStr string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenStr, &Claims{}, func(t *jwt.Token) (interface{}, error) {
 		return jwtSecret, nil
-	})
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 	if err != nil {
 		return nil, err
 	}
