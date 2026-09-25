@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Input, Select, Space, Table, Tag } from 'antd'
+import { Button, Card, Input, Select, Space, Table, Tag, message } from 'antd'
 import { ApiOutlined, DatabaseOutlined, ExportOutlined, SearchOutlined, UserAddOutlined } from '@ant-design/icons'
 import { assetService, claimAsset } from '../services/api'
+import { errorMessage } from '../services/http'
+import { useSession } from '../context/session'
 
 interface Props {
   onNavigate: (page: string, id?: string) => void
@@ -37,11 +39,21 @@ export default function Assets({ onNavigate }: Props) {
     assetService.list().then(setAssets)
   }, [])
 
-  const handleClaim = (assetId: string) => {
-    claimAsset(assetId, 'current.user@company.com')
+  const { can, session } = useSession()
+  const canClaim = can('asset.manage')
+
+  const handleClaim = async (assetId: string) => {
+    const owner = session?.user.username || ''
+    try {
+      await claimAsset(assetId, owner)
+    } catch (err) {
+      message.error(errorMessage(err))
+      return
+    }
     setAssets(prev => prev.map(a =>
-      a.asset_id === assetId ? { ...a, claim_status: 'claimed', owner: 'current.user@company.com' } : a
+      a.asset_id === assetId ? { ...a, claim_status: 'claimed', owner } : a
     ))
+    message.success('已认领')
   }
 
   const filteredAssets = useMemo(() => {
@@ -119,7 +131,7 @@ export default function Assets({ onNavigate }: Props) {
       width: 150,
       render: (_: any, record: any) => (
         <Space>
-          {record.claim_status === 'unclaimed' && (
+          {record.claim_status === 'unclaimed' && canClaim && (
             <Button size="small" icon={<UserAddOutlined />} onClick={(e) => { e.stopPropagation(); handleClaim(record.asset_id) }}>认领</Button>
           )}
           <Button size="small" type="primary" onClick={(e) => { e.stopPropagation(); onNavigate('asset-detail', record.asset_id) }}>详情</Button>
@@ -195,7 +207,7 @@ export default function Assets({ onNavigate }: Props) {
       </div>
 
       <Card title={`资产清单 (${filteredAssets.length})`}>
-        <Table
+        <Table scroll={{ x: 'max-content' }}
           columns={columns}
           dataSource={filteredAssets}
           rowKey="asset_id"

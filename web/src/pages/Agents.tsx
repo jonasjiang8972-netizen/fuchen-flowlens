@@ -90,8 +90,8 @@ export default function Agents({ onNavigate }: Props) {
     <div className="commercial-page">
       <div className="page-heading">
         <div>
-          <div className="page-heading__title">采集与链路</div>
-          <div className="page-heading__desc">面向运维和平台团队，确认 API 流量是否被覆盖、链路是否延迟、队列是否积压、采集证据是否可信。</div>
+          <div className="page-heading__title">采集器管理</div>
+          <div className="page-heading__desc">面向运维和平台团队：管理采集器部署与健康，确认流量是否被覆盖、链路是否延迟、队列是否积压。采集器以独立令牌（可叠加双向 TLS）接入平台。</div>
         </div>
       </div>
 

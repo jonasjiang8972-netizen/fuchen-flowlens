@@ -1,191 +1,116 @@
-const API_BASE = '/api/v1'
+import { message } from 'antd'
+import { ApiError, DEMO, errorMessage, request } from './http'
 
-function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem('flowlens_token')
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (token) headers['Authorization'] = `Bearer ${token}`
-  return headers
-}
+export { DEMO } from './http'
 
-// Static demo builds (VITE_DEMO=true) have no backend: every call falls back
-// to the built-in sample data.
-const DEMO = import.meta.env.VITE_DEMO === 'true'
-
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  if (DEMO) throw new Error('demo mode: no backend')
-  const resp = await fetch(`${API_BASE}${url}`, {
-    headers: getAuthHeaders(),
-    ...options,
-  })
-  if (resp.status === 401) {
-    localStorage.removeItem('flowlens_token')
-    window.location.reload()
-    throw new Error('Unauthorized')
+// Reads return sample data only in the static demo build. Against a real
+// platform a failed read shows an error and returns an empty result: sample
+// data must never be mistaken for real findings.
+async function read<T>(fn: () => Promise<T>, mock: () => T, empty: T): Promise<T> {
+  if (DEMO) return mock()
+  try {
+    return await fn()
+  } catch (err) {
+    if (!(err instanceof ApiError && err.status === 401)) message.error(errorMessage(err))
+    return empty
   }
-  if (!resp.ok) throw new Error(`API error: ${resp.status}`)
-  return resp.json()
 }
 
-// ─── Agent Service ───────────────────────────────────────────────
+// Writes succeed silently only in the demo build; otherwise errors propagate
+// so the page can tell the user the action did not happen.
+async function write<T>(fn: () => Promise<T>, demoResult: T): Promise<T> {
+  if (DEMO) return demoResult
+  return fn()
+}
+
+// ─── Collectors (management console) ─────────────────────────────
 
 export const agentService = {
-  list: async () => {
-    try {
-      const data = await request<{ items: any[] }>('/agents')
-      return data.items
-    } catch {
-      return generateMockAgents()
-    }
-  },
-  detail: async (id: string) => {
-    try {
-      return await request<any>(`/agents/${id}`)
-    } catch {
-      const metrics: Record<string, any> = {
-        'agent-prod-k8s-01': {
-          qps_history: [14200, 14500, 14800, 15000, 15230, 15100, 14900, 15230],
-          drop_rate_history: [0.001, 0.001, 0.002, 0.001, 0.001, 0.001, 0.002, 0.001],
-          cpu_history: [11.2, 12.0, 13.5, 12.8, 12.3, 11.9, 12.1, 12.3],
-          memory_history: [480, 490, 505, 510, 512, 508, 510, 512],
-          kafka_lag: 0, bytes_processed: 1847293447, packets_processed: 892340123, uptime_seconds: 259200,
-        },
-      }
-      return {
-        agent_id: id,
-        metrics: metrics[id] || { qps_history: [0], drop_rate_history: [0], cpu_history: [0], memory_history: [0] },
-        config: { mode: 'auto' },
-        recent_logs: [],
-        collected_apis: 30,
-      }
-    }
-  },
+  list: () => read(async () => (await request<{ items: any[] }>('/admin/agents')).items, generateMockAgents, []),
+  detail: (id: string) => read(() => request<any>(`/admin/agents/${id}`), () => mockAgentDetail(id), {
+    agent_id: id, metrics: { qps_history: [], drop_rate_history: [], cpu_history: [], memory_history: [] }, config: {}, recent_logs: [], collected_apis: 0,
+  }),
 }
 
 export const ingestService = {
-  metrics: async () => {
-    try {
-      return await request<any>('/ingest/metrics')
-    } catch {
-      return {
-        accepted: 1523000,
-        dropped: 182,
-        duplicates: 936,
-        processed: 1522416,
-        queue_depth: 584,
-        queue_size: 20000,
-        last_event_at: new Date(Date.now() - 2800).toISOString(),
-      }
-    }
-  },
+  metrics: () => read(() => request<any>('/admin/ingest/metrics'), () => ({
+    accepted: 1523000, dropped: 182, duplicates: 936, processed: 1522416,
+    queue_depth: 584, queue_size: 20000, last_event_at: new Date(Date.now() - 2800).toISOString(),
+  }), { accepted: 0, dropped: 0, duplicates: 0, processed: 0, queue_depth: 0, queue_size: 0 }),
 }
 
-// ─── Asset Service ───────────────────────────────────────────────
+// Collection coverage summary for the API security console.
+export const coverageService = {
+  agents: () => read(() => request<any>('/coverage/agents'), () => {
+    const rows = generateMockAgents()
+    return {
+      total_agents: rows.length,
+      online: rows.filter(a => a.status === 'online').length,
+      degraded: rows.filter(a => a.status === 'degraded').length,
+      offline: rows.filter(a => a.status === 'offline').length,
+    }
+  }, { total_agents: 0, online: 0, degraded: 0, offline: 0 }),
+}
+
+// ─── Assets ──────────────────────────────────────────────────────
 
 export const assetService = {
-  list: async () => {
-    try {
-      const data = await request<{ items: any[] }>('/assets')
-      return data.items
-    } catch {
-      return generateMockAssets()
-    }
-  },
-  detail: async (id: string) => {
-    try {
-      return await request<any>(`/assets/${id}`)
-    } catch {
-      const alerts: Record<string, any[]> = {
-        'ast-001': [{ alert_id: 'alt-001', title: '疑似 BOLA 攻击', severity: 'high', status: 'open', timestamp: new Date(Date.now() - 300000).toISOString() }],
-      }
-      return {
-        asset_id: id,
-        alerts: alerts[id] || [],
-        change_history: [],
-        related_assets: [],
-      }
-    }
-  },
+  list: () => read(async () => (await request<{ items: any[] }>('/assets')).items, generateMockAssets, []),
+  detail: (id: string) => read(() => request<any>(`/assets/${id}`), () => ({
+    asset_id: id,
+    alerts: id === 'ast-001' ? [{ alert_id: 'alt-001', title: '疑似 BOLA 攻击', severity: 'high', status: 'open', timestamp: new Date(Date.now() - 300000).toISOString() }] : [],
+    change_history: [], related_assets: [],
+  }), { asset_id: id, alerts: [], change_history: [], related_assets: [] }),
 }
 
-// ─── Alert Service ───────────────────────────────────────────────
+// ─── Alerts ──────────────────────────────────────────────────────
 
 export const alertService = {
-  list: async () => {
-    try {
-      const data = await request<{ items: any[] }>('/alerts')
-      return data.items
-    } catch {
-      return generateMockAlerts()
-    }
-  },
-  detail: async (id: string) => {
-    try {
-      return await request<any>(`/alerts/${id}`)
-    } catch {
-      const timelines: Record<string, any> = {
-        'alt-001': [{ time: new Date(Date.now() - 3600000).toISOString(), event: '基线建立', detail: '完成' }],
-      }
-      return {
-        alert_id: id,
-        timeline: timelines[id] || [],
-        related_alerts: [],
-        raw_data: {},
-      }
-    }
-  },
+  list: () => read(async () => (await request<{ items: any[] }>('/alerts')).items, generateMockAlerts, []),
+  detail: (id: string) => read(() => request<any>(`/alerts/${id}`), () => ({
+    alert_id: id,
+    timeline: id === 'alt-001' ? [{ time: new Date(Date.now() - 3600000).toISOString(), event: '基线建立', detail: '完成' }] : [],
+    related_alerts: [], raw_data: {},
+  }), { alert_id: id, timeline: [], related_alerts: [], raw_data: {} }),
 }
 
-// ─── Action APIs ─────────────────────────────────────────────────
+// ─── Actions (throw on failure) ──────────────────────────────────
 
-export const claimAsset = async (assetId: string, owner: string) => {
-  try {
-    return await request(`/assets/${assetId}/claim`, { method: 'POST', body: JSON.stringify({ owner }) })
-  } catch {
-    return { status: 'ok' }
-  }
-}
+export const claimAsset = (assetId: string, owner: string) =>
+  write(() => request(`/assets/${assetId}/claim`, { method: 'POST', body: JSON.stringify({ owner }) }), { status: 'ok' })
 
-export const executeAlertAction = async (alertId: string, action: string) => {
-  try {
-    return await request(`/alerts/${alertId}/${action}`, { method: 'POST' })
-  } catch {
-    return { status: 'ok', action }
-  }
-}
+export const executeAlertAction = (alertId: string, action: string) =>
+  write(() => request(`/alerts/${alertId}/${action}`, { method: 'POST', body: '{}' }), { status: 'ok', action })
 
-// ─── Rule Service ──────────────────────────────────────────────
+// ─── Detection policy ────────────────────────────────────────────
 
 export const ruleService = {
-  list: async () => {
-    try {
-      const data = await request<{ items: any[] }>('/rules')
-      return data.items
-    } catch {
-      return generateMockRules()
-    }
-  },
-  categories: async () => {
-    try {
-      const data = await request<{ items: string[] }>('/rules/categories')
-      return data.items
-    } catch {
-      return ['越权访问', '身份安全', '数据安全', '业务风控', '可用性', '注入攻击', '配置错误']
-    }
-  },
-  detail: async (id: string) => {
-    try {
-      return await request<any>(`/rules/${id}`)
-    } catch {
-      return { rule_id: id, name: '', params: [] }
-    }
-  },
-  update: async (id: string, body: any) => {
-    try {
-      return await request<any>(`/rules/${id}`, { method: 'PUT', body: JSON.stringify(body) })
-    } catch {
-      return { status: 'ok' }
-    }
-  },
+  list: () => read(async () => (await request<{ items: any[] }>('/rules')).items, generateMockRules, []),
+  categories: () => read(async () => (await request<{ items: string[] }>('/rules/categories')).items,
+    () => ['越权访问', '身份安全', '数据安全', '业务风控', '可用性', '注入攻击', '配置错误'], []),
+  detail: (id: string) => read(() => request<any>(`/rules/${id}`),
+    () => generateMockRules().find(r => r.rule_id === id) || { rule_id: id, name: '', params: [] }, { rule_id: id, name: '', params: [] }),
+  update: (id: string, body: any) =>
+    write(() => request<any>(`/rules/${id}`, { method: 'PUT', body: JSON.stringify(body) }), { status: 'ok' }),
+}
+
+function mockAgentDetail(id: string) {
+  const metrics: Record<string, any> = {
+    'agent-prod-k8s-01': {
+      qps_history: [14200, 14500, 14800, 15000, 15230, 15100, 14900, 15230],
+      drop_rate_history: [0.001, 0.001, 0.002, 0.001, 0.001, 0.001, 0.002, 0.001],
+      cpu_history: [11.2, 12.0, 13.5, 12.8, 12.3, 11.9, 12.1, 12.3],
+      memory_history: [480, 490, 505, 510, 512, 508, 510, 512],
+      kafka_lag: 0, bytes_processed: 1847293447, packets_processed: 892340123, uptime_seconds: 259200,
+    },
+  }
+  return {
+    agent_id: id,
+    metrics: metrics[id] || { qps_history: [0], drop_rate_history: [0], cpu_history: [0], memory_history: [0] },
+    config: { mode: 'auto' },
+    recent_logs: [],
+    collected_apis: 30,
+  }
 }
 
 // ─── Mock Data Fallback ─────────────────────────────────────────

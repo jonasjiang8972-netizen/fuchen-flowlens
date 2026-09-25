@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Button, Card, Descriptions, InputNumber, Modal, Switch, Table, Tabs, Tag, message } from 'antd'
 import { ruleService } from '../services/api'
+import { errorMessage } from '../services/http'
+import { useSession } from '../context/session'
 
 export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: string) => void }) {
   const [rules, setRules] = useState<any[]>([])
@@ -14,8 +16,16 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
     ruleService.categories().then(setCategories)
   }, [])
 
+  const { can } = useSession()
+  const canManage = can('rule.manage')
+
   const handleToggle = async (ruleId: string, enabled: boolean) => {
-    await ruleService.update(ruleId, { enabled })
+    try {
+      await ruleService.update(ruleId, { enabled })
+    } catch (err) {
+      message.error(errorMessage(err))
+      return
+    }
     setRules(prev => prev.map(r => r.rule_id === ruleId ? { ...r, enabled } : r))
     message.success(`规则 ${enabled ? '已启用' : '已禁用'}`)
   }
@@ -27,7 +37,12 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
   }
 
   const handleApplyConfig = async (ruleId: string, key: string, value: any) => {
-    await ruleService.update(ruleId, { config: { [key]: value } })
+    try {
+      await ruleService.update(ruleId, { config: { [key]: value } })
+    } catch (err) {
+      message.error(errorMessage(err))
+      return
+    }
     message.success('配置已更新')
   }
 
@@ -44,7 +59,7 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
         return <Tag color={colors[s]}>{s}</Tag>
       } },
     { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 80,
-      render: (enabled: boolean, record: any) => <Switch checked={enabled} onChange={(v) => handleToggle(record.rule_id, v)} /> },
+      render: (enabled: boolean, record: any) => <Switch checked={enabled} disabled={!canManage} onChange={(v) => handleToggle(record.rule_id, v)} /> },
     { title: '命中次数', dataIndex: 'hit_count', key: 'hits', width: 100 },
     { title: '操作', key: 'action', width: 80,
       render: (_: any, record: any) => <Button size="small" type="primary" onClick={() => handleView(record.rule_id)}>查看</Button> },
@@ -92,7 +107,7 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
                 <Tag color={({ critical: 'red', high: 'orangered', medium: 'orange', low: 'blue' } as Record<string, string>)[selectedRule.severity]}>{selectedRule.severity}</Tag>
               </Descriptions.Item>
               <Descriptions.Item label="状态">
-                <Switch checked={selectedRule.enabled} onChange={(v) => handleToggle(selectedRule.rule_id, v)} />
+                <Switch checked={selectedRule.enabled} disabled={!canManage} onChange={(v) => handleToggle(selectedRule.rule_id, v)} />
               </Descriptions.Item>
               <Descriptions.Item label="描述" span={2}>{selectedRule.description}</Descriptions.Item>
               <Descriptions.Item label="建议" span={2}>{selectedRule.recommendation}</Descriptions.Item>
@@ -113,6 +128,7 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
                     {param.type === 'bool' ? (
                       <Switch
                         defaultChecked={param.default_value === true}
+                        disabled={!canManage}
                         onChange={(v) => handleApplyConfig(selectedRule.rule_id, param.key, v)}
                       />
                     ) : param.type === 'float' || param.type === 'int' ? (
@@ -121,12 +137,14 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
                         min={param.min}
                         max={param.max}
                         step={param.type === 'int' ? 1 : 0.1}
-                        onChange={(v) => handleApplyConfig(selectedRule.rule_id, param.key, v)}
+                        disabled={!canManage}
+                        onBlur={(e) => handleApplyConfig(selectedRule.rule_id, param.key, Number(e.target.value))}
                       />
                     ) : (
                       <input
                         defaultValue={param.default_value as string}
-                        onChange={(e) => handleApplyConfig(selectedRule.rule_id, param.key, e.target.value)}
+                        disabled={!canManage}
+                        onBlur={(e) => handleApplyConfig(selectedRule.rule_id, param.key, e.target.value)}
                         style={{ background: '#0B1420', border: '1px solid #25344A', color: '#EDEAE0', padding: '4px 8px', borderRadius: 2, width: '100%' }}
                       />
                     )}

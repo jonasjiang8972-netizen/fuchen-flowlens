@@ -11,6 +11,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import { alertService } from '../services/api'
+import { useSession } from '../context/session'
 
 interface Props {
   alertId: string
@@ -58,6 +59,7 @@ function inferEvidence(alert: any, rawData: Record<string, string>) {
 }
 
 export default function AlertDetail({ alertId, onBack, onNavigate }: Props) {
+  const { can } = useSession()
   const [alert, setAlert] = useState<any>(null)
   const [detail, setDetail] = useState<any>(null)
 
@@ -112,7 +114,7 @@ export default function AlertDetail({ alertId, onBack, onNavigate }: Props) {
         <Space>
           <Button icon={<AuditOutlined />}>标记误报</Button>
           <Button icon={<ClockCircleOutlined />}>创建工单</Button>
-          <Button type="primary" danger icon={<ThunderboltOutlined />}>立即处置</Button>
+          {can('alert.handle') && <Button type="primary" danger icon={<ThunderboltOutlined />}>立即处置</Button>}
         </Space>
       </div>
 

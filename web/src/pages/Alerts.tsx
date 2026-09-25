@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Input, Select, Space, Table, Tag } from 'antd'
+import { Button, Card, Input, Select, Space, Table, Tag, message } from 'antd'
 import { AlertOutlined, CheckCircleOutlined, ExportOutlined, SearchOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { alertService, executeAlertAction } from '../services/api'
+import { errorMessage } from '../services/http'
+import { useSession } from '../context/session'
 
 interface Props {
   onNavigate: (page: string, id?: string) => void
@@ -48,11 +50,20 @@ export default function Alerts({ onNavigate }: Props) {
     alertService.list().then(setAlerts)
   }, [])
 
-  const handleAction = (alertId: string, action: string) => {
-    executeAlertAction(alertId, action)
+  const { can } = useSession()
+  const canHandle = can('alert.handle')
+
+  const handleAction = async (alertId: string, action: string) => {
+    try {
+      await executeAlertAction(alertId, action)
+    } catch (err) {
+      message.error(errorMessage(err))
+      return
+    }
     setAlerts(prev => prev.map(a =>
       a.alert_id === alertId ? { ...a, status: 'in_progress', disposal: { action, status: 'success' } } : a
     ))
+    message.success(action === 'ip_block' ? '已下发封禁' : '已下发限流')
   }
 
   const sources = useMemo(() => {
@@ -151,10 +162,10 @@ export default function Alerts({ onNavigate }: Props) {
       render: (_: any, record: any) => (
         <Space>
           <Button size="small" onClick={(e) => { e.stopPropagation(); onNavigate('alert-detail', record.alert_id) }}>详情</Button>
-          {record.status === 'open' && (
+          {record.status === 'open' && canHandle && (
             <Button size="small" type="primary" danger onClick={(e) => { e.stopPropagation(); handleAction(record.alert_id, 'ip_block') }}>封禁</Button>
           )}
-          {record.status === 'open' && (
+          {record.status === 'open' && canHandle && (
             <Button size="small" onClick={(e) => { e.stopPropagation(); handleAction(record.alert_id, 'rate_limit') }}>限流</Button>
           )}
         </Space>
@@ -171,7 +182,7 @@ export default function Alerts({ onNavigate }: Props) {
         </div>
         <Space>
           <Button icon={<ExportOutlined />}>导出报表</Button>
-          <Button type="primary" icon={<ThunderboltOutlined />}>批量处置</Button>
+          {canHandle && <Button type="primary" icon={<ThunderboltOutlined />}>批量处置</Button>}
         </Space>
       </div>
 
@@ -227,7 +238,7 @@ export default function Alerts({ onNavigate }: Props) {
       </div>
 
       <Card title={`告警队列 (${filteredAlerts.length})`}>
-        <Table
+        <Table scroll={{ x: 'max-content' }}
           columns={columns}
           dataSource={filteredAlerts}
           rowKey="alert_id"

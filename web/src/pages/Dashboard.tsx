@@ -10,7 +10,7 @@ import {
   TeamOutlined,
 } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { agentService, alertService, assetService } from '../services/api'
+import { alertService, assetService, coverageService } from '../services/api'
 
 interface Props {
   onNavigate: (page: string, id?: string) => void
@@ -39,13 +39,13 @@ const statusText: Record<string, string> = {
 }
 
 export default function Dashboard({ onNavigate }: Props) {
-  const [agents, setAgents] = useState<any[]>([])
+  const [coverage, setCoverage] = useState({ total_agents: 0, online: 0, degraded: 0, offline: 0 })
   const [assets, setAssets] = useState<any[]>([])
   const [alerts, setAlerts] = useState<any[]>([])
 
   useEffect(() => {
-    Promise.all([agentService.list(), assetService.list(), alertService.list()]).then(([agentRows, assetRows, alertRows]) => {
-      setAgents(agentRows)
+    Promise.all([coverageService.agents(), assetService.list(), alertService.list()]).then(([cov, assetRows, alertRows]) => {
+      setCoverage(cov)
       setAssets(assetRows)
       setAlerts(alertRows)
     })
@@ -56,8 +56,7 @@ export default function Dashboard({ onNavigate }: Props) {
   const highAssets = assets.filter(a => a.sensitivity_hint === 'high')
   const shadowAssets = assets.filter(a => a.status === 'shadow')
   const unclaimedAssets = assets.filter(a => a.claim_status === 'unclaimed')
-  const onlineAgents = agents.filter(a => a.status === 'online')
-  const degradedAgents = agents.filter(a => a.status === 'degraded' || a.status === 'offline')
+  const abnormalAgents = coverage.degraded + coverage.offline
 
   const priorityAlerts = useMemo(() => {
     return [...alerts]
@@ -178,8 +177,8 @@ export default function Dashboard({ onNavigate }: Props) {
         </Card>
         <Card className="metric-card">
           <div className="metric-card__label"><CloudServerOutlined /> 采集器健康</div>
-          <div className="metric-card__value">{onlineAgents.length}/{agents.length}</div>
-          <div className="metric-card__meta">{degradedAgents.length} 个异常节点需要排查</div>
+          <div className="metric-card__value">{coverage.online}/{coverage.total_agents}</div>
+          <div className="metric-card__meta">{abnormalAgents} 个异常节点需要排查</div>
         </Card>
         <Card className="metric-card">
           <div className="metric-card__label"><TeamOutlined /> 责任归属</div>
@@ -211,7 +210,7 @@ export default function Dashboard({ onNavigate }: Props) {
             <Row justify="space-between"><Col className="muted"><CheckCircleOutlined /> 数据链路</Col><Col><Tag color="success">正常</Tag></Col></Row>
             <Row justify="space-between"><Col className="muted"><ClockCircleOutlined /> 最新发现</Col><Col>{shadowAssets.length} 个影子 API</Col></Row>
             <Row justify="space-between"><Col className="muted"><AlertOutlined /> 处置 SLA</Col><Col>{openAlerts.length > 5 ? <Tag color="warning">需关注</Tag> : <Tag color="success">稳定</Tag>}</Col></Row>
-            <Row justify="space-between"><Col className="muted"><CloudServerOutlined /> 采集异常</Col><Col>{degradedAgents.length} 个节点</Col></Row>
+            <Row justify="space-between"><Col className="muted"><CloudServerOutlined /> 采集异常</Col><Col>{abnormalAgents} 个节点</Col></Row>
           </Space>
         </Card>
       </div>

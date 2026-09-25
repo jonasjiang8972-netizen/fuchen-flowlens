@@ -282,12 +282,12 @@ func (s *Service) Login(ctx context.Context, username, password, ip, userAgent s
 	if err := s.store.CreateSession(ctx, sess); err != nil {
 		return nil, err
 	}
-	detail := ""
+	detail := "进入" + map[Console]string{ConsoleAdmin: "系统管理后台", ConsoleSecurity: "API 安全管理平台"}[ConsoleOf(Role(u.Role))]
 	if u.MustChangePassword {
-		detail = "须修改口令后才能操作"
+		detail += "；须修改口令后才能操作"
 	}
 	_ = s.audit.Record(ctx, storage.AuditRecord{UserID: u.ID, Username: u.Username, Role: u.Role, SourceIP: ip,
-		Console: string(ConsoleOf(Role(u.Role))), EventType: "auth.login", Target: u.Username, Result: audit.ResultSuccess, Detail: detail})
+		Console: "auth", EventType: "auth.login", Target: u.Username, Result: audit.ResultSuccess, Detail: detail})
 	return &LoginResult{
 		Token: token, ExpiresAt: sess.ExpiresAt, User: viewOf(u), Console: ConsoleOf(Role(u.Role)),
 		MustChangePassword: u.MustChangePassword, Permissions: PermissionsOf(Role(u.Role)),

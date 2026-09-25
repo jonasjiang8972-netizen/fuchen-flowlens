@@ -948,3 +948,121 @@ body {
   justify-content: center;
   min-height: 320px;
 }
+
+// ─── Sign-in and password screens ─────────────────────────────
+.auth-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: #0b1420;
+}
+
+.auth-card {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  max-width: 420px;
+  padding: 36px 32px 24px;
+  background: #101b2d;
+  border: 1px solid #25344a;
+  border-radius: 6px;
+  color: #edeae0;
+
+  .arco-input-inner-wrapper,
+  .arco-input {
+    background: #0b1420;
+    border-color: #25344a;
+    color: #edeae0;
+  }
+
+  .arco-form-label-item > label {
+    color: #b8c0cc;
+  }
+}
+
+.auth-card__head {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.auth-card__title {
+  margin-top: 12px;
+  font-size: 22px;
+  font-weight: 700;
+  text-wrap: balance;
+}
+
+.auth-card__sub {
+  margin-top: 6px;
+  color: #8a93a3;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.auth-card__foot {
+  margin-top: 4px;
+  color: #6b7686;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: center;
+}
+
+.auth-rules {
+  margin: 0 0 16px;
+  padding: 12px 12px 12px 30px;
+  background: rgba(230, 162, 60, 0.08);
+  border: 1px solid rgba(230, 162, 60, 0.25);
+  border-radius: 4px;
+  color: #d6c7a8;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+// ─── Management console ───────────────────────────────────────
+// A distinct brand mark so operators always know which console they are in.
+.flow-shell--admin .flow-brand__mark {
+  background: linear-gradient(135deg, #4f6bd8, #2f3f8f);
+}
+
+.flow-shell--admin .flow-sider {
+  background: #151d33 !important;
+}
+
+.policy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.page-heading {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+// Grid items default to min-width:auto and grow to their widest child (a
+// scrollable table); a minmax(0, 1fr) column keeps them within the page.
+.commercial-page {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+// Let wide tables scroll inside their card instead of widening the page.
+.flow-shell .ant-layout,
+.flow-content {
+  min-width: 0;
+}
