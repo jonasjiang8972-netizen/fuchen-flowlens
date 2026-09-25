@@ -260,3 +260,87 @@ func TestBFLARareRoleOnAdminEndpoint(t *testing.T) {
 		t.Fatalf("unexpected BFLA events: %+v", evts)
 	}
 }
+
+func TestBOLAStoredEventsAreThrottled(t *testing.T) {
+	e, store, clk := newBOLA()
+	traverse(e, clk, "mallory", 0, 120) // over 2 minutes, score >= 70 from object 21 on
+	if n := len(detectionEvents(t, store, "BOLA")); n != 1 {
+		t.Fatalf("stored %d BOLA events during one burst, want 1", n)
+	}
+	clk.Advance(eventCooldown)
+	traverse(e, clk, "mallory", 1000, 60)
+	if n := len(detectionEvents(t, store, "BOLA")); n != 2 {
+		t.Fatalf("stored %d BOLA events after cooldown, want 2", n)
+	}
+}
+
+func TestAuthStoredEventsAreThrottled(t *testing.T) {
+	e, store, _ := newAuth()
+	fail(e, "6.6.6.6", 12, 6)
+	for i := 0; i < 5; i++ {
+		if score, _ := e.Evaluate("6.6.6.6"); score < 70 {
+			t.Fatalf("score %d, want >= 70 on every evaluation", score)
+		}
+	}
+	if n := len(detectionEvents(t, store, "CREDENTIAL_STUFFING")); n != 1 {
+		t.Fatalf("stored %d events, want 1", n)
+	}
+}
+
+func TestBFLAPrivilegedRolesAreNotFlagged(t *testing.T) {
+	e, store := newBFLA()
+	for _, role := range []string{"admin", "Super_Admin", "security_admin"} {
+		e.RecordAccess("ops", role, "/admin/users")
+		if score, _ := e.Evaluate("ops", role, "/admin/users"); score != 0 {
+			t.Fatalf("privileged role %q scored %d", role, score)
+		}
+	}
+	if n := len(detectionEvents(t, store, "BFLA")); n != 0 {
+		t.Fatalf("stored %d BFLA events for privileged roles", n)
+	}
+}
+
+func TestBFLAColdStartFlagsOrdinaryRoles(t *testing.T) {
+	e, _ := newBFLA()
+	e.RecordAccess("eve", "user", "/actuator/env")
+	score, reason := e.Evaluate("eve", "user", "/actuator/env")
+	if score != 75 || !strings.Contains(reason, "基线不足") {
+		t.Fatalf("score=%d reason=%q, want 75 with cold-start reason", score, reason)
+	}
+}
+
+func TestBFLACommonRoleIsNotFlagged(t *testing.T) {
+	e, _ := newBFLA()
+	for i := 0; i < 20; i++ {
+		e.RecordAccess(fmt.Sprintf("svc-%d", i), "service", "/actuator/health")
+	}
+	if score, _ := e.Evaluate("svc-1", "service", "/actuator/health"); score != 0 {
+		t.Fatalf("role with 100%% share scored %d", score)
+	}
+}
+
+func TestBFLAAdminPrefixMatchesWholeSegments(t *testing.T) {
+	for path, want := range map[string]bool{
+		"/admin":               true,
+		"/admin/users":         true,
+		"/api/v1/admin/config": true,
+		"/administrator-guide": false,
+		"/adminx":              false,
+		"/api/orders":          false,
+	} {
+		if got := isAdminEndpoint(path); got != want {
+			t.Errorf("isAdminEndpoint(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
+func TestBFLAStoredEventsAreThrottled(t *testing.T) {
+	e, store := newBFLA()
+	for i := 0; i < 5; i++ {
+		e.RecordAccess("eve", "user", "/admin/users")
+		e.Evaluate("eve", "user", "/admin/users")
+	}
+	if n := len(detectionEvents(t, store, "BFLA")); n != 1 {
+		t.Fatalf("stored %d BFLA events, want 1", n)
+	}
+}

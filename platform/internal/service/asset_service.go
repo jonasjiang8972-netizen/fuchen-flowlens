@@ -3,6 +3,8 @@ package service
 import (
 	"fmt"
 	"hash/fnv"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,15 +44,29 @@ type RequestStats struct {
 	HourlyCalls      []int          `json:"hourly_calls"`
 	TopCallers       []CallerInfo   `json:"top_callers"`
 
-	latencySamples int // events that reported a duration, for the running mean
+	latencySamples int       // events that reported a duration, for the running mean
+	latencyWindow  []float64 // ring buffer of recent durations for P95
+	latencyNext    int
+	callers        map[string]*callerCount // per-IP counts, capped at maxTrackedCallers
+	internalCalls  int
+	externalCalls  int
 }
+
+type callerCount struct {
+	calls  int
+	errors int
+}
+
+const (
+	latencyWindowSize = 512
+	maxTrackedCallers = 10000
+	topCallerCount    = 5
+)
 
 type CallerInfo struct {
 	IP        string  `json:"ip"`
 	Calls     int     `json:"calls"`
 	ErrorRate float64 `json:"error_rate"`
-
-	errors int
 }
 
 type AssetDetail struct {
@@ -327,9 +343,42 @@ func (s *AssetService) List() []Asset {
 	defer s.mu.RUnlock()
 	result := make([]Asset, 0, len(s.assets))
 	for _, a := range s.assets {
-		result = append(result, *a)
+		result = append(result, a.snapshot())
 	}
 	return result
+}
+
+// snapshot returns a deep copy that callers can read (e.g. marshal to JSON)
+// without holding the lock while ingest keeps mutating the original.
+func (a *Asset) snapshot() Asset {
+	c := *a
+	c.PathRawSamples = append([]string(nil), a.PathRawSamples...)
+	c.SensitiveFields = append([]string(nil), a.SensitiveFields...)
+	if a.SourceDistribution != nil {
+		c.SourceDistribution = make(map[string]string, len(a.SourceDistribution))
+		for k, v := range a.SourceDistribution {
+			c.SourceDistribution[k] = v
+		}
+	}
+	if a.RequestStats != nil {
+		rs := RequestStats{
+			TotalCalls24h:    a.RequestStats.TotalCalls24h,
+			UniqueCallers24h: a.RequestStats.UniqueCallers24h,
+			ErrorRate24h:     a.RequestStats.ErrorRate24h,
+			AvgLatencyMs:     a.RequestStats.AvgLatencyMs,
+			P95LatencyMs:     a.RequestStats.P95LatencyMs,
+			HourlyCalls:      append([]int(nil), a.RequestStats.HourlyCalls...),
+			TopCallers:       append([]CallerInfo(nil), a.RequestStats.TopCallers...),
+		}
+		if a.RequestStats.StatusCodeDist != nil {
+			rs.StatusCodeDist = make(map[string]int, len(a.RequestStats.StatusCodeDist))
+			for k, v := range a.RequestStats.StatusCodeDist {
+				rs.StatusCodeDist[k] = v
+			}
+		}
+		c.RequestStats = &rs
+	}
+	return c
 }
 
 func (s *AssetService) Get(id string) (*Asset, error) {
@@ -339,7 +388,8 @@ func (s *AssetService) Get(id string) (*Asset, error) {
 	if !ok {
 		return nil, fmt.Errorf("asset not found: %s", id)
 	}
-	return a, nil
+	c := a.snapshot()
+	return &c, nil
 }
 
 func (s *AssetService) GetDetail(id string) (*AssetDetail, error) {
@@ -350,7 +400,7 @@ func (s *AssetService) GetDetail(id string) (*AssetDetail, error) {
 		return nil, fmt.Errorf("asset not found: %s", id)
 	}
 	return &AssetDetail{
-		Asset:         *a,
+		Asset:         a.snapshot(),
 		Alerts:        s.getAssetAlerts(id),
 		ChangeHistory: s.getAssetChanges(id),
 		RelatedAssets: s.getRelatedAssets(id),
@@ -518,14 +568,12 @@ func (s *AssetService) ObserveEvent(evt shared.APIEvent, sensitiveFields []strin
 		a.RequestStats.latencySamples++
 		n := float64(a.RequestStats.latencySamples)
 		a.RequestStats.AvgLatencyMs += (evt.Application.DurationMs - a.RequestStats.AvgLatencyMs) / n
-		if evt.Application.DurationMs > a.RequestStats.P95LatencyMs {
-			a.RequestStats.P95LatencyMs = evt.Application.DurationMs
-		}
+		recordLatency(a.RequestStats, evt.Application.DurationMs)
 	}
 	updateCallerStats(a.RequestStats, evt.Network.SrcIP, int(evt.Application.StatusCode) >= 400)
 	a.SourceDistribution = sourceDistributionFromCallers(a.RequestStats)
 
-	return *a
+	return a.snapshot()
 }
 
 func assetID(method, host, path string) string {
@@ -571,16 +619,9 @@ func inferGroupPath(path, serviceName string) string {
 }
 
 func sourceDistributionFromCallers(stats *RequestStats) map[string]string {
-	internal := 0
-	external := 0
+	internal, external := 0, 0
 	if stats != nil {
-		for _, caller := range stats.TopCallers {
-			if isInternalIP(caller.IP) {
-				internal += caller.Calls
-			} else {
-				external += caller.Calls
-			}
-		}
+		internal, external = stats.internalCalls, stats.externalCalls
 	}
 	total := internal + external
 	if total == 0 {
@@ -590,6 +631,21 @@ func sourceDistributionFromCallers(stats *RequestStats) map[string]string {
 		"internal": fmt.Sprintf("%d%%", internal*100/total),
 		"external": fmt.Sprintf("%d%%", external*100/total),
 	}
+}
+
+// recordLatency adds a sample to the recent-latency window and recomputes
+// P95 (nearest-rank) over it.
+func recordLatency(stats *RequestStats, ms float64) {
+	if len(stats.latencyWindow) < latencyWindowSize {
+		stats.latencyWindow = append(stats.latencyWindow, ms)
+	} else {
+		stats.latencyWindow[stats.latencyNext] = ms
+		stats.latencyNext = (stats.latencyNext + 1) % latencyWindowSize
+	}
+	sorted := append([]float64(nil), stats.latencyWindow...)
+	sort.Float64s(sorted)
+	rank := int(math.Ceil(0.95*float64(len(sorted)))) - 1
+	stats.P95LatencyMs = sorted[rank]
 }
 
 func isInternalIP(ip string) bool {
@@ -606,31 +662,65 @@ func isInternalIP(ip string) bool {
 	return false
 }
 
+// updateCallerStats counts a call from ip and keeps TopCallers as the
+// topCallerCount IPs with the most calls. Because counts only grow by one,
+// an IP can enter the top list only by overtaking its current minimum.
+// Past maxTrackedCallers new IPs are not tracked individually, so
+// UniqueCallers24h becomes a lower bound.
 func updateCallerStats(stats *RequestStats, ip string, isError bool) {
 	if ip == "" {
 		ip = "unknown"
 	}
-	for i := range stats.TopCallers {
-		c := &stats.TopCallers[i]
-		if c.IP == ip {
-			c.Calls++
-			if isError {
-				c.errors++
-			}
-			c.ErrorRate = float64(c.errors) / float64(c.Calls) * 100
-			stats.UniqueCallers24h = len(stats.TopCallers)
+	if isInternalIP(ip) {
+		stats.internalCalls++
+	} else {
+		stats.externalCalls++
+	}
+	if stats.callers == nil {
+		stats.callers = make(map[string]*callerCount)
+	}
+	cc, ok := stats.callers[ip]
+	if !ok {
+		if len(stats.callers) >= maxTrackedCallers {
 			return
 		}
+		cc = &callerCount{}
+		stats.callers[ip] = cc
 	}
-	if len(stats.TopCallers) < 5 {
-		c := CallerInfo{IP: ip, Calls: 1}
-		if isError {
-			c.errors = 1
-			c.ErrorRate = 100
+	cc.calls++
+	if isError {
+		cc.errors++
+	}
+	stats.UniqueCallers24h = len(stats.callers)
+
+	info := CallerInfo{IP: ip, Calls: cc.calls, ErrorRate: float64(cc.errors) / float64(cc.calls) * 100}
+	idx := -1
+	for i := range stats.TopCallers {
+		if stats.TopCallers[i].IP == ip {
+			idx = i
+			break
 		}
-		stats.TopCallers = append(stats.TopCallers, c)
 	}
-	stats.UniqueCallers24h = len(stats.TopCallers)
+	switch {
+	case idx >= 0:
+		stats.TopCallers[idx] = info
+	case len(stats.TopCallers) < topCallerCount:
+		stats.TopCallers = append(stats.TopCallers, info)
+	default:
+		minIdx := 0
+		for i := range stats.TopCallers {
+			if stats.TopCallers[i].Calls < stats.TopCallers[minIdx].Calls {
+				minIdx = i
+			}
+		}
+		if info.Calls <= stats.TopCallers[minIdx].Calls {
+			return
+		}
+		stats.TopCallers[minIdx] = info
+	}
+	sort.SliceStable(stats.TopCallers, func(i, j int) bool {
+		return stats.TopCallers[i].Calls > stats.TopCallers[j].Calls
+	})
 }
 
 func contains(items []string, needle string) bool {

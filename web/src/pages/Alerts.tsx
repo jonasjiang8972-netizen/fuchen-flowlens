@@ -90,7 +90,10 @@ export default function Alerts({ onNavigate }: Props) {
       key: 'title',
       render: (title: string, record: any) => (
         <Space direction="vertical" size={3}>
-          <span style={{ fontWeight: 650 }}>{title}</span>
+          <Space size={6}>
+            <span style={{ fontWeight: 650 }}>{title}</span>
+            {record.occurrence_count > 1 && <Tag color="orange">×{record.occurrence_count} 次</Tag>}
+          </Space>
           <span className="muted">{record.description}</span>
         </Space>
       ),
@@ -132,7 +135,14 @@ export default function Alerts({ onNavigate }: Props) {
       dataIndex: 'timestamp',
       key: 'time',
       width: 170,
-      render: (value: string) => new Date(value).toLocaleString('zh-CN'),
+      render: (value: string, record: any) => (
+        <Space direction="vertical" size={0}>
+          <span>{new Date(value).toLocaleString('zh-CN')}</span>
+          {record.occurrence_count > 1 && record.last_seen && (
+            <span className="muted">最近 {new Date(record.last_seen).toLocaleString('zh-CN')}</span>
+          )}
+        </Space>
+      ),
     },
     {
       title: '处置',

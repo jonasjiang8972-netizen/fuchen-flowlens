@@ -1,6 +1,8 @@
 package service
 
 import (
+	"encoding/json"
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -140,5 +142,72 @@ func TestClaim(t *testing.T) {
 	}
 	if err := s.Claim("missing", "x"); err == nil {
 		t.Fatal("claiming a missing asset succeeded")
+	}
+}
+
+func TestAssetReadsDoNotShareStateWithIngest(t *testing.T) {
+	s := NewAssetService()
+	a := s.ObserveEvent(apiEvent("/api/race", "", "10.0.0.1", 200, 5), nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 2000; i++ {
+			s.ObserveEvent(apiEvent("/api/race", "", fmt.Sprintf("10.0.%d.%d", i%7, i%250), 200, float64(i%50)), nil)
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		for _, listed := range s.List() {
+			if _, err := json.Marshal(listed); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, _ := s.Get(a.ID)
+		if _, err := json.Marshal(got); err != nil {
+			t.Fatal(err)
+		}
+		if d, err := s.GetDetail(a.ID); err == nil {
+			_, _ = json.Marshal(d)
+		}
+	}
+	<-done
+}
+
+func TestObserveEventP95Latency(t *testing.T) {
+	s := NewAssetService()
+	var a Asset
+	for i := 1; i <= 100; i++ {
+		a = s.ObserveEvent(apiEvent("/api/p95", "", "10.0.0.1", 200, float64(i)), nil)
+	}
+	if a.RequestStats.P95LatencyMs != 95 {
+		t.Fatalf("p95 of 1..100 = %v, want 95", a.RequestStats.P95LatencyMs)
+	}
+	// One huge outlier must not become the P95 (it did when P95 stored the max).
+	a = s.ObserveEvent(apiEvent("/api/p95", "", "10.0.0.1", 200, 100000), nil)
+	if a.RequestStats.P95LatencyMs > 100 {
+		t.Fatalf("p95 jumped to outlier: %v", a.RequestStats.P95LatencyMs)
+	}
+}
+
+func TestObserveEventUniqueAndTopCallers(t *testing.T) {
+	s := NewAssetService()
+	var a Asset
+	// 8 distinct callers; caller k makes k calls.
+	for k := 1; k <= 8; k++ {
+		for i := 0; i < k; i++ {
+			a = s.ObserveEvent(apiEvent("/api/top", "", fmt.Sprintf("10.0.0.%d", k), 200, 0), nil)
+		}
+	}
+	if a.RequestStats.UniqueCallers24h != 8 {
+		t.Fatalf("unique callers %d, want 8", a.RequestStats.UniqueCallers24h)
+	}
+	top := a.RequestStats.TopCallers
+	if len(top) != 5 {
+		t.Fatalf("top callers %d, want 5", len(top))
+	}
+	for i, want := range []string{"10.0.0.8", "10.0.0.7", "10.0.0.6", "10.0.0.5", "10.0.0.4"} {
+		if top[i].IP != want || top[i].Calls != 8-i {
+			t.Fatalf("top[%d] = %+v, want %s with %d calls", i, top[i], want, 8-i)
+		}
 	}
 }

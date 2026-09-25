@@ -22,6 +22,8 @@ type Alert struct {
 	AffectedAssetCount int           `json:"affected_asset_count"`
 	AttackPath         []AttackStep  `json:"attack_path"`
 	Disposal           *DisposalInfo `json:"disposal,omitempty"`
+	OccurrenceCount    int           `json:"occurrence_count,omitempty"`
+	LastSeen           time.Time     `json:"last_seen,omitempty"`
 }
 
 type AttackStep struct {
@@ -56,11 +58,25 @@ type TimelineEvent struct {
 type AlertService struct {
 	mu     sync.RWMutex
 	alerts map[string]*Alert
+	// activeDetections maps a detection key to the alert that repeat
+	// detections are merged into.
+	activeDetections map[string]string
+	now              func() time.Time
+	seq              uint64 // makes detection alert IDs unique within a nanosecond
 }
+
+const (
+	// detectionMergeWindow is how long after its last occurrence a detection
+	// alert keeps absorbing repeats of the same finding.
+	detectionMergeWindow = 30 * time.Minute
+	maxAttackPathSteps   = 50
+)
 
 func NewAlertService() *AlertService {
 	s := &AlertService{
-		alerts: make(map[string]*Alert),
+		alerts:           make(map[string]*Alert),
+		activeDetections: make(map[string]string),
+		now:              time.Now,
 	}
 	s.seedAlerts()
 	return s
@@ -198,12 +214,46 @@ func (s *AlertService) List() []Alert {
 	return result
 }
 
+// CreateDetectionAlert records a detection. Repeats of the same finding
+// (requirement, account and source IP) are merged into the existing alert
+// while it is still open or acknowledged and was last seen within
+// detectionMergeWindow, instead of creating one alert per request.
 func (s *AlertService) CreateDetectionAlert(sourceRequirement, severity, title, description, sourceIP, accountID string, riskScore int, confidence float64) Alert {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
-	id := fmt.Sprintf("alt-det-%d", now.UnixNano())
+	now := s.now()
+	key := sourceRequirement + "|" + accountID + "|" + sourceIP
+	if id, ok := s.activeDetections[key]; ok {
+		if a, ok := s.alerts[id]; ok && mergeable(a, now) {
+			a.OccurrenceCount++
+			a.LastSeen = now
+			a.Description = description
+			if riskScore > a.RiskScore {
+				a.RiskScore = riskScore
+				a.Title = title
+			}
+			if severityRank(severity) > severityRank(a.Severity) {
+				a.Severity = severity
+			}
+			if confidence > a.Confidence {
+				a.Confidence = confidence
+			}
+			if len(a.AttackPath) < maxAttackPathSteps {
+				a.AttackPath = append(a.AttackPath, AttackStep{
+					Sequence:  len(a.AttackPath) + 1,
+					Timestamp: now,
+					Action:    "detect",
+					Detail:    description,
+					SourceIP:  sourceIP,
+				})
+			}
+			return *a
+		}
+	}
+
+	s.seq++
+	id := fmt.Sprintf("alt-det-%d-%d", now.UnixNano(), s.seq)
 	alert := &Alert{
 		ID:                 id,
 		Timestamp:          now,
@@ -217,6 +267,8 @@ func (s *AlertService) CreateDetectionAlert(sourceRequirement, severity, title, 
 		SourceIP:           sourceIP,
 		AccountID:          accountID,
 		AffectedAssetCount: 1,
+		OccurrenceCount:    1,
+		LastSeen:           now,
 		AttackPath: []AttackStep{
 			{
 				Sequence:  1,
@@ -228,7 +280,32 @@ func (s *AlertService) CreateDetectionAlert(sourceRequirement, severity, title, 
 		},
 	}
 	s.alerts[id] = alert
+	s.activeDetections[key] = id
 	return *alert
+}
+
+// mergeable reports whether a repeat detection may be folded into a. Once an
+// alert has been acted on (disposal in progress or closed) a recurring attack
+// should raise a fresh alert.
+func mergeable(a *Alert, now time.Time) bool {
+	if a.Status != "open" && a.Status != "acknowledged" {
+		return false
+	}
+	return now.Sub(a.LastSeen) <= detectionMergeWindow
+}
+
+func severityRank(severity string) int {
+	switch severity {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	}
+	return 0
 }
 
 func (s *AlertService) Get(id string) (*Alert, error) {
@@ -238,7 +315,9 @@ func (s *AlertService) Get(id string) (*Alert, error) {
 	if !ok {
 		return nil, fmt.Errorf("alert not found: %s", id)
 	}
-	return a, nil
+	c := *a
+	c.AttackPath = append([]AttackStep(nil), a.AttackPath...)
+	return &c, nil
 }
 
 func (s *AlertService) GetDetail(id string) (*AlertDetail, error) {

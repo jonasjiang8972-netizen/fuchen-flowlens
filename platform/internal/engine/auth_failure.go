@@ -15,6 +15,7 @@ type AuthFailureEngine struct {
 	mu          sync.RWMutex
 	failTracker map[string]*AuthTracker
 	now         func() time.Time
+	events      *cooldown
 }
 
 type AuthTracker struct {
@@ -30,6 +31,7 @@ func NewAuthFailureEngine(store storage.Store) *AuthFailureEngine {
 		store:       store,
 		failTracker: make(map[string]*AuthTracker),
 		now:         time.Now,
+		events:      newCooldown(),
 	}
 }
 
@@ -82,7 +84,7 @@ func (e *AuthFailureEngine) Evaluate(ip string) (int, string) {
 		reason = fmt.Sprintf("高频失败登录: %s, %d 次/%.0f 分钟", ip, failCount, duration)
 	}
 
-	if riskScore >= 70 {
+	if riskScore >= 70 && e.events.allow(ip, e.now()) {
 		evt := &storage.AlertEvent{
 			ID:   fmt.Sprintf("auth-%d", time.Now().UnixNano()),
 			Type: "CREDENTIAL_STUFFING", Severity: "critical",

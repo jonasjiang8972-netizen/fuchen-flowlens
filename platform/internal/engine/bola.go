@@ -15,6 +15,7 @@ type BOLAEngine struct {
 	mu          sync.RWMutex
 	accountBase map[string]*AccountBaseline
 	now         func() time.Time
+	events      *cooldown
 }
 
 type AccountBaseline struct {
@@ -37,6 +38,7 @@ func NewBOLAEngine(store storage.Store) *BOLAEngine {
 		store:       store,
 		accountBase: make(map[string]*AccountBaseline),
 		now:         time.Now,
+		events:      newCooldown(),
 	}
 }
 
@@ -95,7 +97,7 @@ func (e *BOLAEngine) Evaluate(accountID, objectID, endpoint, sourceIP string) (i
 		reason = fmt.Sprintf("大量对象访问: 累计 %d 个对象", len(baseline.ObjectIDs))
 	}
 
-	if riskScore >= 70 {
+	if riskScore >= 70 && e.events.allow(accountID, now) {
 		evt := &storage.AlertEvent{
 			ID:   fmt.Sprintf("bola-%d", time.Now().UnixNano()),
 			Type: "BOLA", Severity: "high",
