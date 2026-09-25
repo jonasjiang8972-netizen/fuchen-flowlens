@@ -72,7 +72,8 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false)
 
   useEffect(() => {
-    const previewMode = import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === '1'
+    const previewMode = import.meta.env.VITE_DEMO === 'true'
+      || (import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === '1')
     if (previewMode) {
       setToken('local-preview-token')
       setUser('preview@flowlens.local')
@@ -94,6 +95,8 @@ export default function App() {
     setToken(newToken); setUser(newUser); setRole(newRole); setAuthenticated(true)
   }
   const handleLogout = () => {
+    // The static demo has no login backend: start over instead of showing a dead login form.
+    if (import.meta.env.VITE_DEMO === 'true') { window.location.reload(); return }
     localStorage.clear(); setAuthenticated(false); setToken('')
   }
 
@@ -197,6 +200,7 @@ export default function App() {
         <Layout.Header className="flow-header">
           <Breadcrumb items={getBreadcrumb()} />
           <Space size={12}>
+            {import.meta.env.VITE_DEMO === 'true' && <Tag color="blue">在线演示 · 示例数据</Tag>}
             <Tag color="success">采集正常</Tag>
             <span className="flow-version">v0.6.0</span>
           </Space>

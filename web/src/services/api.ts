@@ -7,7 +7,12 @@ function getAuthHeaders(): Record<string, string> {
   return headers
 }
 
+// Static demo builds (VITE_DEMO=true) have no backend: every call falls back
+// to the built-in sample data.
+const DEMO = import.meta.env.VITE_DEMO === 'true'
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  if (DEMO) throw new Error('demo mode: no backend')
   const resp = await fetch(`${API_BASE}${url}`, {
     headers: getAuthHeaders(),
     ...options,

@@ -64,3 +64,4 @@ tmp/
 *.tfstate
 *.tfstate.*
 web/node_modules/
+web/dist-demo/
