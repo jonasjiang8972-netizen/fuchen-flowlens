@@ -80,8 +80,8 @@
 离线安装包 `flowlens-poc-<版本>-<架构>.tar.gz` 内含全部镜像，服务器不需要连接互联网：
 
 ```bash
-tar -xzf flowlens-poc-0.7.1-amd64.tar.gz
-cd flowlens-poc-0.7.1-amd64
+tar -xzf flowlens-poc-0.7.2-amd64.tar.gz
+cd flowlens-poc-0.7.2-amd64
 ./install.sh --demo            # 附带演示流量；正式试用加 --https --with-agent
 ```
 
