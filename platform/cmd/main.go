@@ -98,6 +98,9 @@ func main() {
 		srv = server.NewPlatformServer(store)
 	}
 	srv.DemoMode = cfg.demo
+	if cfg.demo || os.Getenv("FLOWLENS_SEED_DEMO") == "true" {
+		srv.SeedDemoGraph()
+	}
 	srv.SecureCookies = cfg.secureCookies
 	srv.SetRedactionKey(cfg.agentToken)
 
@@ -250,7 +253,8 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	sec.GET("/rules/:id", read, srv.GetRuleHandler)
 	sec.PUT("/rules/:id", perm("security", iam.PermRuleManage), srv.UpdateRuleHandler)
 	sec.POST("/rules/:id/hit", perm("security", iam.PermRuleManage), srv.HitRuleHandler)
-	sec.GET("/sensitive/flow-map", read, srv.FlowMapHandler)
+	sec.GET("/graph/flow", read, srv.FlowGraphHandler)
+	sec.GET("/graph/attack", read, srv.AttackGraphHandler)
 	// Collection coverage as seen by security teams (aggregate only).
 	sec.GET("/coverage/agents", read, srv.AgentHealthSummaryHandler)
 

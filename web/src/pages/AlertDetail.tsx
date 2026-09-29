@@ -7,6 +7,7 @@ import {
   ClockCircleOutlined,
   CodeOutlined,
   FileSearchOutlined,
+  ForkOutlined,
   SafetyCertificateOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
@@ -112,6 +113,7 @@ export default function AlertDetail({ alertId, onBack, onNavigate }: Props) {
           <div className="page-heading__desc">从命中依据、攻击时间线、原始证据和处置建议四个维度完成研判。</div>
         </div>
         <Space>
+          <Button icon={<ForkOutlined />} onClick={() => onNavigate('attack-path', alertId)}>攻击路径</Button>
           <Button icon={<AuditOutlined />}>标记误报</Button>
           <Button icon={<ClockCircleOutlined />}>创建工单</Button>
           {can('alert.handle') && <Button type="primary" danger icon={<ThunderboltOutlined />}>立即处置</Button>}

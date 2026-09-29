@@ -14,6 +14,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/audit"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/graph"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/iam"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/ingest"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/service"
@@ -35,6 +36,7 @@ type PlatformServer struct {
 	bflaEngine     *engine.BFLAEngine
 	dlpEngine      *engine.DLPEngine
 	botEngine      *engine.BotEngine
+	graph          *graph.Store
 	ingestPipeline *ingest.Pipeline
 	streamer       *stream.Streamer
 	redactor       *redact.Redactor
@@ -101,6 +103,7 @@ func newServer(store storage.Store, agents *service.AgentService, assets *servic
 		bflaEngine:   engine.NewBFLAEngine(store),
 		dlpEngine:    engine.NewDLPEngine(store, 5),
 		botEngine:    engine.NewBotEngine(store),
+		graph:        graph.NewStore(),
 		redactor:     redact.New(""),
 	}
 	srv.streamer = stream.New(stream.ConfigFromEnv())
@@ -130,6 +133,7 @@ func (s *PlatformServer) StartEngines(ctx context.Context) {
 	go s.bolaEngine.StartCleanup(ctx)
 	go s.authEngine.StartCleanup(ctx)
 	go s.botEngine.StartCleanup(ctx)
+	go s.graph.Cleanup(ctx)
 	s.ingestPipeline.Start(ctx, 4)
 	if s.streamer.Enabled() {
 		logger.L().Info("Streaming backbone enabled (Kafka/ClickHouse)")
@@ -422,6 +426,12 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 		s.alertService.CreateDetectionAlert(sourceRequirement, severity, title, reason, req.SourceIP, req.AccountID, riskScore, principal.Confidence)
 		s.ruleService.IncrementHit(ruleIDForRequirement(sourceRequirement))
 	}
+
+	s.graph.Observe(graph.Observation{
+		Time: evt.Timestamp, SrcIP: evt.Network.SrcIP, Account: principal.ID, Role: principal.Role,
+		Service: graphService(evt), Method: evt.Application.Method, Path: evt.Application.PathNormalized,
+		Status: int(evt.Application.StatusCode), BytesOut: evt.Application.BytesOut, Fields: sensitiveFields,
+	})
 
 	s.detectSensitiveData(evt, req, findings, principal.Confidence)
 	s.detectBot(evt, req, principal.Confidence)
@@ -868,21 +878,6 @@ func (s *PlatformServer) ListRuleCategoriesHandler(c *gin.Context) {
 // ─── Audit Logs ────────────────────────────────────────────────
 
 // ─── Flow Map ──────────────────────────────────────────────────
-
-func (s *PlatformServer) FlowMapHandler(c *gin.Context) {
-	nodes := []map[string]interface{}{
-		{"id": "user-service", "type": "service", "label": "用户服务"},
-		{"id": "order-service", "type": "service", "label": "订单服务"},
-		{"id": "phone", "type": "field", "label": "手机号"},
-		{"id": "id_card", "type": "field", "label": "身份证"},
-	}
-	edges := []map[string]interface{}{
-		{"source": "user-service", "target": "phone", "field_name": "phone", "call_count": 45230},
-		{"source": "user-service", "target": "id_card", "field_name": "id_card", "call_count": 1200},
-		{"source": "order-service", "target": "phone", "field_name": "phone", "call_count": 28720},
-	}
-	c.JSON(200, gin.H{"nodes": nodes, "edges": edges})
-}
 
 // serviceErr maps service errors to responses without exposing internal
 // details (such as database errors) to the client.

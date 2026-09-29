@@ -2,7 +2,7 @@ import { lazy, useState } from 'react'
 import { Tag } from 'antd'
 import {
   AlertOutlined, ApiOutlined, AppstoreOutlined, AreaChartOutlined, AuditOutlined, ControlOutlined,
-  DashboardOutlined, DatabaseOutlined, EyeOutlined, FileDoneOutlined, LinkOutlined,
+  DashboardOutlined, DatabaseOutlined, EyeOutlined, FileDoneOutlined, ForkOutlined, LinkOutlined,
   SafetyCertificateOutlined, TeamOutlined, WarningOutlined,
 } from '@ant-design/icons'
 import ConsoleShell from '../components/ConsoleShell'
@@ -17,6 +17,7 @@ const Rules = lazy(() => import('../pages/Rules'))
 const DataGovernance = lazy(() => import('../pages/DataGovernance/DataGovernance'))
 const RiskOps = lazy(() => import('../pages/RiskOps/RiskOps'))
 const FlowMap = lazy(() => import('../pages/FlowMap'))
+const AttackPath = lazy(() => import('../pages/AttackPath'))
 const AIGovernance = lazy(() => import('../pages/AIGovernance'))
 const IdentityCenter = lazy(() => import('../pages/IdentityCenter'))
 const GovernanceDashboard = lazy(() => import('../pages/GovernanceDashboard'))
@@ -25,7 +26,7 @@ const CoverageCenter = lazy(() => import('../pages/CoverageCenter'))
 const WorkOrderCenter = lazy(() => import('../pages/WorkOrderCenter'))
 
 type PageKey = 'dashboard' | 'assets' | 'asset-detail' | 'alerts' | 'alert-detail'
-  | 'data-gov' | 'risk-ops' | 'rules' | 'flow-map' | 'identity-center' | 'ai-governance'
+  | 'data-gov' | 'risk-ops' | 'rules' | 'flow-map' | 'attack-path' | 'identity-center' | 'ai-governance'
   | 'governance' | 'contracts' | 'coverage' | 'work-orders'
 
 // API security operations and policy only. Accounts, the audit trail,
@@ -36,6 +37,7 @@ const menuItems: ShellMenuItem[] = [
   { key: 'assets', icon: <ApiOutlined />, label: 'API 资产' },
   { key: 'alerts', icon: <SafetyCertificateOutlined />, label: '告警中心' },
   { key: 'flow-map', icon: <LinkOutlined />, label: '调用链路' },
+  { key: 'attack-path', icon: <ForkOutlined />, label: '攻击路径' },
   { key: 'contracts', icon: <FileDoneOutlined />, label: '契约一致性' },
   { key: 'identity-center', icon: <TeamOutlined />, label: '身份与调用方' },
   { key: 'rules', icon: <ControlOutlined />, label: '检测策略' },
@@ -47,7 +49,7 @@ const menuItems: ShellMenuItem[] = [
 ]
 
 const labels: Record<string, string> = {
-  governance: '治理驾驶舱', dashboard: '安全工作台', assets: 'API 资产', alerts: '告警中心', 'flow-map': '调用链路',
+  governance: '治理驾驶舱', dashboard: '安全工作台', assets: 'API 资产', alerts: '告警中心', 'flow-map': '调用链路', 'attack-path': '攻击路径',
   contracts: '契约一致性', 'identity-center': '身份与调用方', rules: '检测策略', 'data-gov': '数据治理',
   coverage: '覆盖率盲区', 'work-orders': '处置闭环', 'ai-governance': 'AI 应用治理', 'risk-ops': '业务风控',
   'asset-detail': '资产详情', 'alert-detail': '告警详情',
@@ -62,7 +64,10 @@ export default function SecurityConsole() {
   const navigateTo = (page: string, id?: string) => {
     if (!pages.has(page)) return
     setActive(page as PageKey)
+    // The attack-path page reads detailId as its focus alert, so opening it
+    // from the menu must clear any alert left over from a detail page.
     if (id) setDetailId(id)
+    else if (page === 'attack-path') setDetailId('')
   }
 
   const renderPage = () => {
@@ -73,6 +78,7 @@ export default function SecurityConsole() {
       case 'alerts': return <Alerts onNavigate={navigateTo} />
       case 'alert-detail': return <AlertDetail alertId={detailId} onBack={() => navigateTo('alerts')} onNavigate={navigateTo} />
       case 'flow-map': return <FlowMap onNavigate={navigateTo} />
+      case 'attack-path': return <AttackPath alertId={detailId} onNavigate={navigateTo} />
       case 'contracts': return <ContractCenter onNavigate={navigateTo} />
       case 'identity-center': return <IdentityCenter />
       case 'data-gov': return <DataGovernance onNavigate={navigateTo} />

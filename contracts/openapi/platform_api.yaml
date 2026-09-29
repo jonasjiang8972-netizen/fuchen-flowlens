@@ -271,26 +271,58 @@ paths:
         '200':
           description: 成功
 
-  /sensitive/flow-map:
+  /graph/flow:
     get:
-      tags: [Sensitive]
-      summary: 数据流动图谱
+      tags: [Graph]
+      summary: 数据流图谱（由真实流量聚合：调用方 → 服务 → 接口 → 敏感字段）
+      description: 图谱仅保存在内存中，重启后由新流量重建；节点、连线和活跃来源都有容量上限，超出部分计入 stats.dropped。
       parameters:
-        - name: field_name
+        - name: view
           in: query
+          schema: { type: string, enum: [business, service, data], default: business }
+        - name: q
+          in: query
+          description: 按节点名称过滤（不区分大小写）
           schema: { type: string }
-        - name: asset_id
+        - name: limit
           in: query
-          schema: { type: string }
-        - name: depth
+          description: 返回的最大连线数（按调用量取前 N，默认 150，上限 500）
+          schema: { type: integer, minimum: 0 }
+        - name: min_calls
           in: query
-          schema: { type: integer, default: 3 }
+          schema: { type: integer, minimum: 0 }
       responses:
         '200':
           description: 成功
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/FlowMap' }
+              schema: { $ref: '#/components/schemas/Graph' }
+        '400':
+          description: 参数无效
+
+  /graph/attack:
+    get:
+      tags: [Graph]
+      summary: 攻击路径图（同一来源的告警按时间串联，并叠加其访问过的账号、接口与敏感字段）
+      parameters:
+        - name: alert_id
+          in: query
+          description: 聚焦某条告警所属的来源（包含该来源的全部告警）
+          schema: { type: string }
+        - name: limit
+          in: query
+          description: 最多返回的来源数（按严重度、风险分排序，默认 10）
+          schema: { type: integer, minimum: 0 }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AttackGraph' }
+        '400':
+          description: 参数无效
+        '404':
+          description: alert_id 不存在
 
   /sensitive/masking-defects:
     get:
@@ -568,6 +600,69 @@ securitySchemes:
 # ============================================================
 components:
   schemas:
+    GraphNode:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [client, service, endpoint, field, actor, account, alert] }
+        label: { type: string }
+        layer: { type: integer, description: 从左到右的列序 }
+        calls: { type: integer }
+        errors: { type: integer }
+        risk: { type: string, enum: [critical, high, medium, low, ''] }
+        zone: { type: string, enum: [internal, external], description: 仅调用方与攻击来源 }
+        detail: { type: string }
+        last_seen: { type: string, format: date-time }
+    GraphEdge:
+      type: object
+      properties:
+        source: { type: string }
+        target: { type: string }
+        kind: { type: string, enum: [flow, sequence] }
+        label: { type: string }
+        calls: { type: integer }
+        errors: { type: integer }
+        bytes_out: { type: integer }
+        last_seen: { type: string, format: date-time }
+    Graph:
+      type: object
+      properties:
+        nodes: { type: array, items: { $ref: '#/components/schemas/GraphNode' } }
+        edges: { type: array, items: { $ref: '#/components/schemas/GraphEdge' } }
+        stats:
+          type: object
+          properties:
+            total_nodes: { type: integer }
+            total_edges: { type: integer }
+            shown_edges: { type: integer }
+            truncated: { type: boolean }
+            dropped: { type: integer, description: 因容量已满而未记录的观测数 }
+    AttackGraph:
+      allOf:
+        - $ref: '#/components/schemas/Graph'
+        - type: object
+          properties:
+            paths:
+              type: array
+              items:
+                type: object
+                properties:
+                  actor: { type: string }
+                  accounts: { type: array, items: { type: string } }
+                  zone: { type: string }
+                  severity: { type: string }
+                  escalating: { type: boolean, description: 后续阶段比前序更深入 }
+                  steps:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        stage: { type: string, enum: [侦察探测, 凭据攻击, 对象枚举, 权限提升, 数据外泄, 异常访问] }
+                        rank: { type: integer }
+                        alert_id: { type: string }
+                        title: { type: string }
+                        severity: { type: string }
+                        time: { type: string, format: date-time }
     Asset:
       type: object
       properties:
@@ -699,24 +794,3 @@ components:
             sample_rate: { type: number }
             always_capture_errors: { type: boolean }
             always_capture_auth: { type: boolean }
-
-    FlowMap:
-      type: object
-      properties:
-        nodes:
-          type: array
-          items:
-            type: object
-            properties:
-              id: { type: string }
-              type: { type: string }
-              label: { type: string }
-        edges:
-          type: array
-          items:
-            type: object
-            properties:
-              source: { type: string }
-              target: { type: string }
-              field_name: { type: string }
-              call_count: { type: integer }
