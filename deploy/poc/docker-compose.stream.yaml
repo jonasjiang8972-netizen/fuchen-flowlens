@@ -1,0 +1,109 @@
+# Optional streaming backbone: Kafka -> Flink -> ClickHouse (docs/DATA_PIPELINE.md).
+# Layer it over the base file:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.stream.yaml up -d --build
+#
+# These images are NOT in the offline installer bundle; the host needs registry
+# access, and the Flink connector jars must be in ../flink/lib before building.
+
+services:
+  clickhouse:
+    image: ${FLOWLENS_CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:24.8-alpine}
+    environment:
+      CLICKHOUSE_DB: flowlens
+      CLICKHOUSE_USER: flowlens
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD in .env}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ../clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.7.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - backend
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.7.0
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - backend
+    restart: unless-stopped
+
+  # Lets the platform publish over plain HTTP (platform/internal/stream).
+  kafka-rest:
+    image: confluentinc/cp-kafka-rest:7.7.0
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_REST_HOST_NAME: kafka-rest
+      KAFKA_REST_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:29092
+      KAFKA_REST_LISTENERS: http://0.0.0.0:8082
+    networks:
+      - backend
+    restart: unless-stopped
+
+  flink-jobmanager:
+    build:
+      context: ../flink
+    image: flowlens-flink:1.18
+    command: jobmanager
+    depends_on:
+      - kafka
+      - clickhouse
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+    networks:
+      - backend
+    restart: unless-stopped
+
+  flink-taskmanager:
+    image: flowlens-flink:1.18
+    command: taskmanager
+    depends_on:
+      - flink-jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+    networks:
+      - backend
+    restart: unless-stopped
+
+  platform:
+    depends_on:
+      kafka-rest:
+        condition: service_started
+      clickhouse:
+        condition: service_healthy
+    environment:
+      FLOWLENS_KAFKA_REST_URL: http://kafka-rest:8082
+      FLOWLENS_KAFKA_TOPIC: fuchen.api.events
+      FLOWLENS_CLICKHOUSE_URL: http://clickhouse:8123
+      FLOWLENS_CLICKHOUSE_DB: flowlens
+      FLOWLENS_CLICKHOUSE_USER: flowlens
+      FLOWLENS_CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+
+volumes:
+  clickhouse_data:

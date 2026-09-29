@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/redact"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/sensitive"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/audit"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
@@ -17,6 +18,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/ingest"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/service"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/stream"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
 )
 
@@ -31,7 +33,10 @@ type PlatformServer struct {
 	bolaEngine     *engine.BOLAEngine
 	authEngine     *engine.AuthFailureEngine
 	bflaEngine     *engine.BFLAEngine
+	dlpEngine      *engine.DLPEngine
+	botEngine      *engine.BotEngine
 	ingestPipeline *ingest.Pipeline
+	streamer       *stream.Streamer
 	redactor       *redact.Redactor
 	DemoMode       bool
 	// SecureCookies sets the Secure flag on the session cookie; enable it
@@ -94,11 +99,17 @@ func newServer(store storage.Store, agents *service.AgentService, assets *servic
 		bolaEngine:   engine.NewBOLAEngine(store),
 		authEngine:   engine.NewAuthFailureEngine(store),
 		bflaEngine:   engine.NewBFLAEngine(store),
+		dlpEngine:    engine.NewDLPEngine(store, 5),
+		botEngine:    engine.NewBotEngine(store),
 		redactor:     redact.New(""),
 	}
+	srv.streamer = stream.New(stream.ConfigFromEnv())
 	srv.ingestPipeline = ingest.NewPipeline(20000, srv.processIngestEvent)
 	return srv
 }
+
+// Close flushes and releases the streaming sinks. Call once at shutdown.
+func (s *PlatformServer) Close() error { return s.streamer.Close() }
 
 // FlushAll persists business records changed by traffic since the last
 // flush (asset statistics, alert merges, rule hits, heartbeats).
@@ -118,7 +129,11 @@ func (s *PlatformServer) FlushAll(ctx context.Context) error {
 func (s *PlatformServer) StartEngines(ctx context.Context) {
 	go s.bolaEngine.StartCleanup(ctx)
 	go s.authEngine.StartCleanup(ctx)
+	go s.botEngine.StartCleanup(ctx)
 	s.ingestPipeline.Start(ctx, 4)
+	if s.streamer.Enabled() {
+		logger.L().Info("Streaming backbone enabled (Kafka/ClickHouse)")
+	}
 	logger.L().Info("Detection engines started")
 }
 
@@ -336,7 +351,11 @@ func ingestStatus(r ingest.SubmitResult) int {
 }
 
 func (s *PlatformServer) IngestMetricsHandler(c *gin.Context) {
-	c.JSON(200, s.ingestPipeline.Metrics())
+	c.JSON(200, struct {
+		ingest.Metrics
+		StreamEnabled bool                        `json:"stream_enabled"`
+		Stream        map[string]stream.SinkStats `json:"stream"`
+	}{s.ingestPipeline.Metrics(), s.streamer.Enabled(), s.streamer.Stats()})
 }
 
 // SetRedactionKey sets the key for credential fingerprints; use the agent
@@ -347,8 +366,15 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 	// Safety net: collectors redact before sending, but never rely on it.
 	s.redactor.Event(&evt)
 	normalizeIngestEvent(&evt)
+	// Tap the redacted event onto Kafka for the Flink aggregation job. Bodies
+	// are dropped: the job needs only metadata, and they are the bulk.
+	rawForStream := evt
+	rawForStream.Content.RequestBody, rawForStream.Content.ResponseBody = nil, nil
+	s.streamer.PublishRaw(rawForStream)
 	principal := resolvePrincipal(evt)
-	sensitiveFields := classifySensitiveFields(evt)
+	// redact.Event has recorded what the response held before masking.
+	findings := sensitive.FromLabels(&evt)
+	sensitiveFields := append(classifySensitiveFields(evt), findingFields(findings)...)
 	s.assetService.ObserveEvent(evt, sensitiveFields)
 
 	req := accessDetectionRequest{
@@ -397,9 +423,87 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 		s.ruleService.IncrementHit(ruleIDForRequirement(sourceRequirement))
 	}
 
+	s.detectSensitiveData(evt, req, findings, principal.Confidence)
+	s.detectBot(evt, req, principal.Confidence)
+
+	// Enriched record for ClickHouse warm storage (no-op when unconfigured).
+	s.streamer.WriteRecord(stream.Record{
+		EventTime: evt.Timestamp, EventID: evt.EventID, AgentID: evt.AgentID, Source: evt.Source,
+		Method: evt.Application.Method, Path: evt.Application.PathNormalized, Host: evt.Application.Host,
+		StatusCode: evt.Application.StatusCode, DurationMs: evt.Application.DurationMs,
+		BytesIn: evt.Application.BytesIn, BytesOut: evt.Application.BytesOut,
+		SrcIP: evt.Network.SrcIP, Principal: principal.ID, Role: principal.Role,
+		RiskScore: riskScore, AlertReason: reason, SensitiveFields: sensitiveFields,
+	})
+
 	if evt.AgentID != "" {
 		s.agentService.UpdateHeartbeat(evt.AgentID)
 	}
+}
+
+// detectSensitiveData raises FR-DLP-001 alerts for unmasked or bulk
+// sensitive data in a response.
+func (s *PlatformServer) detectSensitiveData(evt shared.APIEvent, req accessDetectionRequest, f sensitive.Findings, confidence float64) {
+	if f.Total() == 0 {
+		return
+	}
+	res := s.dlpEngine.Evaluate(req.Endpoint, req.AccountID, req.SourceIP, f)
+	if res.Score < 70 {
+		return
+	}
+	severity, title := "high", "敏感数据批量返回自动告警"
+	if res.MaskingDefect {
+		title = "响应体脱敏缺陷自动告警"
+	}
+	if res.Score >= 90 {
+		severity = "critical"
+	}
+	s.alertService.CreateDetectionAlert("FR-DLP-001", severity, title, res.Reason, req.SourceIP, req.AccountID, res.Score, confidence)
+	s.ruleService.IncrementHit(ruleIDForRequirement("FR-DLP-001"))
+}
+
+// detectBot raises FR-RISK-002 alerts for automated clients.
+func (s *PlatformServer) detectBot(evt shared.APIEvent, req accessDetectionRequest, confidence float64) {
+	h := evt.Content.RequestHeaders
+	ja3 := evt.Metadata.Labels["ja3"]
+	if ja3 == "" {
+		ja3 = headerValue(h, "X-JA3-Fingerprint")
+	}
+	score, reason := s.botEngine.Observe(engine.BotRequest{
+		SourceIP:  req.SourceIP,
+		UserAgent: headerValue(h, "User-Agent"),
+		JA3:       ja3,
+		Browserlike: headerValue(h, "Accept-Language") != "" ||
+			headerValue(h, "Referer") != "" || headerValue(h, "Origin") != "",
+	})
+	if score < 70 {
+		return
+	}
+	s.alertService.CreateDetectionAlert("FR-RISK-002", "medium", "爬虫/自动化客户端自动告警", reason, req.SourceIP, req.AccountID, score, confidence)
+	s.ruleService.IncrementHit(ruleIDForRequirement("FR-RISK-002"))
+}
+
+func headerValue(h map[string]string, name string) string {
+	for k, v := range h {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
+}
+
+// findingFields lists sensitive data types found in a response, marking
+// those left unmasked.
+func findingFields(f sensitive.Findings) []string {
+	var out []string
+	for _, t := range sensitive.Types {
+		if f.Unmasked[t] > 0 && t.Maskable() {
+			out = append(out, string(t)+"(未脱敏)")
+		} else if f.Unmasked[t]+f.Masked[t] > 0 {
+			out = append(out, string(t))
+		}
+	}
+	return out
 }
 
 // ─── Detection Engine Adapters ─────────────────────────────────
@@ -499,6 +603,8 @@ func ruleIDForRequirement(requirement string) string {
 		return "R-BFLA-001"
 	case "FR-DLP-001", "FR-DLP-003":
 		return "R-DLP-001"
+	case "FR-RISK-002":
+		return "R-BOT-001"
 	default:
 		return ""
 	}

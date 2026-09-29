@@ -180,7 +180,7 @@ func (s *RuleService) seedRules() {
 	s.rules["R-BOT-001"] = &Rule{
 		ID: "R-BOT-001", RequirementFR: "FR-RISK-002",
 		Name: "爬虫行为检测", Category: "业务风控",
-		Severity: "medium", Enabled: false, DefaultScore: 50,
+		Severity: "medium", Enabled: true, DefaultScore: 50,
 		Description:    "基于设备指纹、请求间隔规律、资源加载特征识别自动化爬虫行为。",
 		Recommendation: "对该设备指纹实施验证码挑战或限流。",
 		Config:         map[string]interface{}{"fingerprint": "ja3", "behavior_window": "10m"},

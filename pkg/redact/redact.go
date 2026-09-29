@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/emmansun/gmsm/sm3"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/sensitive"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
 )
 
@@ -120,6 +121,9 @@ func luhn(digits string) bool {
 // Event redacts an event in place: headers, query parameters, bodies and the
 // raw path.
 func (r *Redactor) Event(evt *shared.APIEvent) {
+	// Scan first: once values are masked the masking check has nothing left
+	// to see. Only counts are kept, as event labels.
+	sensitive.Annotate(evt)
 	c := &evt.Content
 	c.RequestHeaders = r.headers(c.RequestHeaders)
 	c.ResponseHeaders = r.headers(c.ResponseHeaders)

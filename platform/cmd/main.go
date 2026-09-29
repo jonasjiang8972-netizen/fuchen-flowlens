@@ -169,6 +169,9 @@ func main() {
 	if err := srv.FlushAll(shutdownCtx); err != nil {
 		log.Errorf("Final flush of business data failed: %v", err)
 	}
+	if err := srv.Close(); err != nil {
+		log.Errorf("Closing streaming sinks: %v", err)
+	}
 	log.Info("Server stopped gracefully")
 }
 
