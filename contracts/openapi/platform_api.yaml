@@ -520,6 +520,43 @@ paths:
       responses:
         '200': { description: 成功 }
 
+  /reports/compliance/templates:
+    get:
+      tags: [Reports]
+      summary: 合规报告模板（需要 report.read，仅安全管理员）
+      responses:
+        '200': { description: 成功 }
+
+  /reports/compliance:
+    get:
+      tags: [Reports]
+      summary: 生成合规自查报告（需要 report.read，仅安全管理员）
+      description: |
+        用平台当前的真实状态对照等保三级 / 金融行业要求逐项自查。每项标明判定方式（实时 / 能力 / 需人工）：
+        未实现的功能不会符合，无法验证的事标“需人工核查”。生成时会做一次审计哈希链增量校验，并写入审计（report.generate）。
+        这不是等保测评结论。
+      parameters:
+        - { name: template, in: query, schema: { type: string, enum: [mlps3, finance], default: mlps3 } }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComplianceReport' }
+        '400': { description: 未知模板 }
+        '403': { description: 缺少 report.read 权限 }
+
+  /reports/compliance/export:
+    get:
+      tags: [Reports]
+      summary: 导出合规报告为 HTML 或 CSV 文件（需要 report.read，写入审计 report.export）
+      parameters:
+        - { name: template, in: query, schema: { type: string, enum: [mlps3, finance], default: mlps3 } }
+        - { name: format, in: query, schema: { type: string, enum: [html, csv], default: html } }
+      responses:
+        '200': { description: "文件下载（Content-Disposition 为 attachment）" }
+        '400': { description: 未知模板或格式 }
+
   /graph/flow:
     get:
       tags: [Graph]
@@ -849,6 +886,41 @@ securitySchemes:
 # ============================================================
 components:
   schemas:
+    ComplianceReport:
+      type: object
+      properties:
+        template: { type: string }
+        title: { type: string }
+        generated_at: { type: string, format: date-time }
+        disclaimer: { type: string }
+        demo: { type: boolean, description: 演示环境的示例数据 }
+        summary:
+          type: object
+          properties:
+            pass: { type: integer }
+            partial: { type: integer }
+            fail: { type: integer }
+            manual: { type: integer }
+            total: { type: integer }
+        sections:
+          type: array
+          items:
+            type: object
+            properties:
+              category: { type: string }
+              checks:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string, example: ID-1 }
+                    title: { type: string }
+                    requirement: { type: string }
+                    ref: { type: string, description: 标准或法规引用，条款编号仅作定位 }
+                    status: { type: string, enum: [pass, partial, fail, manual] }
+                    basis: { type: string, enum: [live, capability, manual], description: live 由运行状态判定；capability 取自代码；manual 需人工 }
+                    evidence: { type: string }
+                    remediation: { type: string }
     Ticket:
       type: object
       properties:

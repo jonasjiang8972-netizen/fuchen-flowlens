@@ -103,7 +103,7 @@ export default function ConsoleShell(props: Props) {
               </Space>
             )}
             {props.headerExtra}
-            <span className="flow-version">v0.7.0</span>
+            <span className="flow-version">v{__APP_VERSION__}</span>
           </Space>
         </Layout.Header>
         <Layout.Content className="flow-content">

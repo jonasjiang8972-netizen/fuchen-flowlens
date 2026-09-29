@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -18,6 +19,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/auth"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/compliance"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/iam"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/middleware"
@@ -153,6 +155,12 @@ func main() {
 		}
 		log.Infof("SOAR: connectors %v, dry_run=%v", names, policy.DryRun)
 	}
+
+	srv.SetDeployment(compliance.Deployment{
+		DBPersistent: cfg.dbDSN != "", DBSSLMode: dsnSSLMode(cfg.dbDSN),
+		TLS: cfg.tlsCert != "", SecureCookies: cfg.secureCookies, ClientCertRequired: cfg.tlsClientCA != "",
+		AgentTokenSet: cfg.agentToken != "",
+	})
 
 	srv.StartEngines(ctx)
 	srv.StartMaintenance(ctx)
@@ -297,6 +305,10 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	sec.POST("/tickets/:id/transition", perm("security", iam.PermAlertHandle), srv.TransitionTicketHandler)
 	sec.POST("/tickets/:id/assign", perm("security", iam.PermAlertHandle), srv.AssignTicketHandler)
 	sec.POST("/tickets/:id/comment", perm("security", iam.PermAlertHandle), srv.CommentTicketHandler)
+	report := perm("security", iam.PermReportRead)
+	sec.GET("/reports/compliance/templates", report, srv.ComplianceTemplatesHandler)
+	sec.GET("/reports/compliance", report, srv.ComplianceReportHandler)
+	sec.GET("/reports/compliance/export", report, srv.ComplianceExportHandler)
 	sec.GET("/graph/flow", read, srv.FlowGraphHandler)
 	sec.GET("/graph/attack", read, srv.AttackGraphHandler)
 	// Enforcement (SOAR): blocks are guarded by policy and always audited.
@@ -405,4 +417,22 @@ func configureBOLAML(srv *server.PlatformServer, getenv func(string) string) err
 		return fmt.Errorf("FLOWLENS_BOLA_ML_THRESHOLD: %w", err)
 	}
 	return nil
+}
+
+// dsnSSLMode returns the sslmode of a PostgreSQL connection string, or "" when
+// it cannot be told (a keyword/value DSN without one, or none configured).
+// Both URL and "key=value" forms are understood.
+func dsnSSLMode(dsn string) string {
+	if dsn == "" {
+		return ""
+	}
+	if u, err := url.Parse(dsn); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
+		return u.Query().Get("sslmode")
+	}
+	for _, f := range strings.Fields(dsn) {
+		if v, ok := strings.CutPrefix(f, "sslmode="); ok {
+			return strings.Trim(v, "'")
+		}
+	}
+	return ""
 }

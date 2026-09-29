@@ -100,7 +100,7 @@ export const adminService = {
   fullVerifyStatus: () => (DEMO ? Promise.resolve(demoFullStatus()) : request<FullVerifyStatus>('/admin/audit-logs/verify-full')),
   auditExportUrl: (q: AuditQuery) => `${API_BASE}/admin/audit-logs/export${qs({ ...q, limit: undefined, offset: undefined } as Record<string, unknown>)}`,
 
-  systemInfo: () => (DEMO ? Promise.resolve({ version: '0.7.0', storage: 'postgresql', secure_cookie: true, demo_mode: false,
+  systemInfo: () => (DEMO ? Promise.resolve({ version: __APP_VERSION__, storage: 'postgresql', secure_cookie: true, demo_mode: false,
     ingest: { accepted: 1523000, dropped: 182, duplicates: 936, processed: 1522416, queue_depth: 584, queue_size: 20000 } })
     : request<any>('/admin/system/info')),
 }
@@ -142,7 +142,7 @@ function demoRoles(): RoleInfo[] {
   return [
     { role: 'sys_admin', name: '系统管理员', console: 'admin', description: '管理账号、安全策略、采集器和系统设置；不能查看审计日志，也不能操作 API 安全业务', permissions: ['user.manage', 'policy.manage', 'agent.manage', 'system.manage'] },
     { role: 'audit_admin', name: '审计管理员', console: 'admin', description: '查询、校验和导出审计日志；不能做其他任何操作', permissions: ['audit.read'] },
-    { role: 'sec_admin', name: '安全管理员', console: 'security', description: '配置检测策略、处置告警、管理资产归属', permissions: ['security.read', 'rule.manage', 'alert.handle', 'asset.manage'] },
+    { role: 'sec_admin', name: '安全管理员', console: 'security', description: '配置检测策略、处置告警、管理资产归属', permissions: ['security.read', 'rule.manage', 'alert.handle', 'asset.manage', 'report.read'] },
     { role: 'analyst', name: '安全分析员', console: 'security', description: '研判和处置告警、认领资产；不能修改检测策略', permissions: ['security.read', 'alert.handle', 'asset.manage'] },
     { role: 'viewer', name: '只读用户', console: 'security', description: '查看 API 安全数据，不能做任何修改', permissions: ['security.read'] },
   ]

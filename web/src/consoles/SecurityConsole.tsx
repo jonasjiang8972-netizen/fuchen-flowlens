@@ -3,9 +3,10 @@ import { Tag } from 'antd'
 import {
   AlertOutlined, ApiOutlined, AppstoreOutlined, AreaChartOutlined, AuditOutlined, ControlOutlined,
   DashboardOutlined, DatabaseOutlined, EyeOutlined, FileDoneOutlined, ForkOutlined, LinkOutlined,
-  SafetyCertificateOutlined, TeamOutlined, ThunderboltOutlined, WarningOutlined,
+  SafetyCertificateOutlined, SolutionOutlined, TeamOutlined, ThunderboltOutlined, WarningOutlined,
 } from '@ant-design/icons'
 import ConsoleShell from '../components/ConsoleShell'
+import { useSession } from '../context/session'
 import type { ShellMenuItem } from '../components/ConsoleShell'
 
 const Dashboard = lazy(() => import('../pages/Dashboard'))
@@ -19,6 +20,7 @@ const RiskOps = lazy(() => import('../pages/RiskOps/RiskOps'))
 const FlowMap = lazy(() => import('../pages/FlowMap'))
 const AttackPath = lazy(() => import('../pages/AttackPath'))
 const SoarCenter = lazy(() => import('../pages/SoarCenter'))
+const ComplianceReport = lazy(() => import('../pages/ComplianceReport'))
 const AIGovernance = lazy(() => import('../pages/AIGovernance'))
 const IdentityCenter = lazy(() => import('../pages/IdentityCenter'))
 const GovernanceDashboard = lazy(() => import('../pages/GovernanceDashboard'))
@@ -27,7 +29,7 @@ const CoverageCenter = lazy(() => import('../pages/CoverageCenter'))
 const WorkOrderCenter = lazy(() => import('../pages/WorkOrderCenter'))
 
 type PageKey = 'dashboard' | 'assets' | 'asset-detail' | 'alerts' | 'alert-detail'
-  | 'data-gov' | 'risk-ops' | 'rules' | 'flow-map' | 'attack-path' | 'soar' | 'identity-center' | 'ai-governance'
+  | 'data-gov' | 'risk-ops' | 'rules' | 'flow-map' | 'attack-path' | 'soar' | 'compliance' | 'identity-center' | 'ai-governance'
   | 'governance' | 'contracts' | 'coverage' | 'work-orders'
 
 // API security operations and policy only. Accounts, the audit trail,
@@ -46,12 +48,13 @@ const menuItems: ShellMenuItem[] = [
   { key: 'coverage', icon: <WarningOutlined />, label: '覆盖率盲区' },
   { key: 'soar', icon: <ThunderboltOutlined />, label: '联动处置' },
   { key: 'work-orders', icon: <AuditOutlined />, label: '处置闭环' },
+  { key: 'compliance', icon: <SolutionOutlined />, label: '合规报告' },
   { key: 'ai-governance', icon: <AppstoreOutlined />, label: 'AI 应用治理' },
   { key: 'risk-ops', icon: <AlertOutlined />, label: '业务风控' },
 ]
 
 const labels: Record<string, string> = {
-  governance: '治理驾驶舱', dashboard: '安全工作台', assets: 'API 资产', alerts: '告警中心', 'flow-map': '调用链路', 'attack-path': '攻击路径', soar: '联动处置',
+  governance: '治理驾驶舱', dashboard: '安全工作台', assets: 'API 资产', alerts: '告警中心', 'flow-map': '调用链路', 'attack-path': '攻击路径', soar: '联动处置', compliance: '合规报告',
   contracts: '契约一致性', 'identity-center': '身份与调用方', rules: '检测策略', 'data-gov': '数据治理',
   coverage: '覆盖率盲区', 'work-orders': '处置闭环', 'ai-governance': 'AI 应用治理', 'risk-ops': '业务风控',
   'asset-detail': '资产详情', 'alert-detail': '告警详情',
@@ -60,6 +63,10 @@ const labels: Record<string, string> = {
 const pages = new Set<string>(Object.keys(labels))
 
 export default function SecurityConsole() {
+  const { can } = useSession()
+  // The compliance report summarises the whole platform, so only roles that
+  // may generate it see it in the menu.
+  const visibleMenu = menuItems.filter(m => m.key !== 'compliance' || can('report.read'))
   const [active, setActive] = useState<PageKey>('dashboard')
   const [detailId, setDetailId] = useState('')
 
@@ -80,6 +87,7 @@ export default function SecurityConsole() {
       case 'alerts': return <Alerts onNavigate={navigateTo} />
       case 'alert-detail': return <AlertDetail alertId={detailId} onBack={() => navigateTo('alerts')} onNavigate={navigateTo} />
       case 'flow-map': return <FlowMap onNavigate={navigateTo} />
+      case 'compliance': return <ComplianceReport />
       case 'soar': return <SoarCenter onNavigate={navigateTo} />
       case 'attack-path': return <AttackPath alertId={detailId} onNavigate={navigateTo} />
       case 'contracts': return <ContractCenter onNavigate={navigateTo} />
@@ -108,7 +116,7 @@ export default function SecurityConsole() {
       variant="security"
       brandIcon={<EyeOutlined />}
       brandSub="API 安全管理平台"
-      menuItems={menuItems}
+      menuItems={visibleMenu}
       activeKey={active.endsWith('-detail') ? active.replace('-detail', '') : active}
       onNavigate={navigateTo}
       breadcrumb={breadcrumb}

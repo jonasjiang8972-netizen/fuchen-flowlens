@@ -14,6 +14,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/sensitive"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/audit"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/compliance"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/graph"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/iam"
@@ -41,6 +42,7 @@ type PlatformServer struct {
 	graph          *graph.Store
 	soar           *soar.Manager
 	ticketService  *service.TicketService
+	deployment     compliance.Deployment
 	ingestPipeline *ingest.Pipeline
 	streamer       *stream.Streamer
 	redactor       *redact.Redactor
