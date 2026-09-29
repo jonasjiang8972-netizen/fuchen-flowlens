@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/auth"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/iam"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/middleware"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/server"
@@ -128,6 +130,9 @@ func main() {
 		// to probe them with "test connection". Use only the simulator.
 		policy.DryRun = true
 		adapters = []soar.Adapter{soar.Simulator{}}
+	}
+	if err := configureBOLAML(srv, os.Getenv); err != nil {
+		log.Fatalf("%v", err)
 	}
 	soarMgr := soar.NewManager(policy, adapters, store, srv.Audit())
 	if err := soarMgr.Load(ctx); err != nil {
@@ -278,6 +283,7 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	sec.POST("/alerts/:id/:action", perm("security", iam.PermAlertHandle), srv.AlertActionHandler)
 	sec.POST("/detect/access", perm("security", iam.PermRuleManage), srv.RecordAccessHandler)
 	sec.GET("/detect/events", read, srv.ListDetectionEventsHandler)
+	sec.GET("/detect/ml", read, srv.DetectionMLHandler)
 	sec.GET("/rules", read, srv.ListRulesHandler)
 	sec.GET("/rules/categories", read, srv.ListRuleCategoriesHandler)
 	sec.GET("/rules/:id", read, srv.GetRuleHandler)
@@ -369,4 +375,26 @@ func splitList(v string) []string {
 		}
 	}
 	return out
+}
+
+// configureBOLAML applies FLOWLENS_BOLA_ML ("off" or "false" disables the
+// anomaly model) and FLOWLENS_BOLA_ML_THRESHOLD (score in (0.5, 1)).
+func configureBOLAML(srv *server.PlatformServer, getenv func(string) string) error {
+	enabled := true
+	switch strings.ToLower(strings.TrimSpace(getenv("FLOWLENS_BOLA_ML"))) {
+	case "off", "false", "0", "no":
+		enabled = false
+	}
+	threshold := engine.DefaultMLThreshold
+	if v := strings.TrimSpace(getenv("FLOWLENS_BOLA_ML_THRESHOLD")); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("FLOWLENS_BOLA_ML_THRESHOLD: %q 不是有效数字", v)
+		}
+		threshold = f
+	}
+	if err := srv.ConfigureBOLAML(enabled, threshold); err != nil {
+		return fmt.Errorf("FLOWLENS_BOLA_ML_THRESHOLD: %w", err)
+	}
+	return nil
 }

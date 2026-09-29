@@ -948,3 +948,14 @@ func serviceErr(c *gin.Context, err error) {
 	logger.L().Errorf("%s %s: %v", c.Request.Method, c.Request.URL.Path, err)
 	c.JSON(500, gin.H{"error": "保存失败，请稍后重试"})
 }
+
+// ConfigureBOLAML sets whether the BOLA anomaly model is used and the score at
+// which it flags an account.
+func (s *PlatformServer) ConfigureBOLAML(enabled bool, threshold float64) error {
+	return s.bolaEngine.ConfigureML(enabled, threshold)
+}
+
+// DetectionMLHandler reports the state of the anomaly model.
+func (s *PlatformServer) DetectionMLHandler(c *gin.Context) {
+	c.JSON(200, gin.H{"bola": s.bolaEngine.MLStatus()})
+}

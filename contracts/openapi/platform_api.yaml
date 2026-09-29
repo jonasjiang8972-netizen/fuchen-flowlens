@@ -360,6 +360,29 @@ paths:
         '404': { description: 该地址当前没有生效的封禁 }
         '502': { description: 部分联动系统解封失败，将自动重试 }
 
+  /detect/ml:
+    get:
+      tags: [Detection]
+      summary: 异常检测模型状态（BOLA 孤立森林）
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bola:
+                    type: object
+                    properties:
+                      enabled: { type: boolean }
+                      trained: { type: boolean, description: 样本不足时为 false，此时只使用规则 }
+                      trained_at: { type: string, format: date-time }
+                      samples: { type: integer, description: 蓄水池中的训练样本数 }
+                      min_samples: { type: integer }
+                      trained_rows: { type: integer, description: 最近一次训练所用的行数 }
+                      threshold: { type: number }
+
   /graph/flow:
     get:
       tags: [Graph]

@@ -16,6 +16,7 @@ type BOLAEngine struct {
 	accountBase map[string]*AccountBaseline
 	now         func() time.Time
 	events      *cooldown
+	ml          *mlState
 }
 
 type AccountBaseline struct {
@@ -39,6 +40,7 @@ func NewBOLAEngine(store storage.Store) *BOLAEngine {
 		accountBase: make(map[string]*AccountBaseline),
 		now:         time.Now,
 		events:      newCooldown(),
+		ml:          newMLState(),
 	}
 }
 
@@ -95,6 +97,14 @@ func (e *BOLAEngine) Evaluate(accountID, objectID, endpoint, sourceIP string) (i
 	} else if len(baseline.ObjectIDs) > 100 {
 		riskScore = 50
 		reason = fmt.Sprintf("大量对象访问: 累计 %d 个对象", len(baseline.ObjectIDs))
+	}
+
+	// Learn what ordinary accounts look like, and let the model flag
+	// traversal that stays under the fixed thresholds.
+	feat := bolaFeatures{Unique: uniqueCount, Accesses: len(baseline.WindowAccess), Cumulative: len(baseline.ObjectIDs), RatePerMin: traverseRate}
+	e.observeLocked(accountID, feat, now)
+	if anomaly, ok := e.anomalyLocked(feat); ok {
+		riskScore, reason = applyML(riskScore, reason, feat, anomaly, e.ml.threshold)
 	}
 
 	if riskScore >= 70 && e.events.allow(accountID, now) {
