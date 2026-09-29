@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Col, Descriptions, Row, Space, Steps, Table, Tag, Timeline } from 'antd'
+import { Button, Card, Col, Descriptions, message, Popconfirm, Row, Space, Steps, Table, Tag, Timeline } from 'antd'
 import {
   ArrowLeftOutlined,
   AuditOutlined,
@@ -11,7 +11,8 @@ import {
   SafetyCertificateOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons'
-import { alertService } from '../services/api'
+import { alertService, executeAlertAction } from '../services/api'
+import { errorMessage } from '../services/http'
 import { useSession } from '../context/session'
 
 interface Props {
@@ -63,6 +64,7 @@ export default function AlertDetail({ alertId, onBack, onNavigate }: Props) {
   const { can } = useSession()
   const [alert, setAlert] = useState<any>(null)
   const [detail, setDetail] = useState<any>(null)
+  const [blocking, setBlocking] = useState(false)
 
   useEffect(() => {
     Promise.all([
@@ -79,6 +81,27 @@ export default function AlertDetail({ alertId, onBack, onNavigate }: Props) {
   const evidence = useMemo(() => inferEvidence(alert, rawData), [alert, rawData])
 
   if (!alert) return <div className="commercial-page">加载中...</div>
+
+  const blockSource = async () => {
+    setBlocking(true)
+    try {
+      const res: any = await executeAlertAction(alertId, 'ip_block')
+      const dryRun = res?.block?.state === 'dry_run'
+      setAlert((a: any) => ({ ...a, status: 'in_progress', disposal: { action: 'ip_block', status: dryRun ? 'dry_run' : 'success', executed_at: new Date().toISOString() } }))
+      message.success(dryRun ? '已记录封禁（演练模式，未真实封禁）' : `已封禁 ${alert.source_ip}`)
+    } catch (err) {
+      message.error(errorMessage(err))
+      alertService.list().then(list => { const f = list.find((a: any) => a.alert_id === alertId); if (f) setAlert(f) })
+    } finally {
+      setBlocking(false)
+    }
+  }
+
+  const disposalLabel: Record<string, { text: string; color: string }> = {
+    success: { text: '已封禁', color: 'success' },
+    dry_run: { text: '演练（未真实封禁）', color: 'warning' },
+    failed: { text: '封禁失败', color: 'error' },
+  }
 
   const evidenceColumns = [
     { title: '证据项', dataIndex: 'key', key: 'key', width: 170 },
@@ -116,7 +139,11 @@ export default function AlertDetail({ alertId, onBack, onNavigate }: Props) {
           <Button icon={<ForkOutlined />} onClick={() => onNavigate('attack-path', alertId)}>攻击路径</Button>
           <Button icon={<AuditOutlined />}>标记误报</Button>
           <Button icon={<ClockCircleOutlined />}>创建工单</Button>
-          {can('alert.handle') && <Button type="primary" danger icon={<ThunderboltOutlined />}>立即处置</Button>}
+          {can('alert.handle') && alert.source_ip && alert.status === 'open' && (
+            <Popconfirm title={`封禁 ${alert.source_ip}？`} description="会在已配置的联动系统上立即生效，可能影响正常用户。" okText="封禁" cancelText="取消" onConfirm={blockSource}>
+              <Button type="primary" danger icon={<ThunderboltOutlined />} loading={blocking}>封禁来源 IP</Button>
+            </Popconfirm>
+          )}
         </Space>
       </div>
 
@@ -150,6 +177,12 @@ export default function AlertDetail({ alertId, onBack, onNavigate }: Props) {
             <Descriptions.Item label="核心原因">{alert.description}</Descriptions.Item>
             <Descriptions.Item label="检测窗口">{evidence.duration}</Descriptions.Item>
             <Descriptions.Item label="基线偏离">当前 {evidence.uniqueIds} 个唯一对象，历史基线约 {evidence.baseline} 个，偏离 {evidence.deviation}x</Descriptions.Item>
+            {alert.disposal && (
+              <Descriptions.Item label="处置结果">
+                <Tag color={disposalLabel[alert.disposal.status]?.color}>{disposalLabel[alert.disposal.status]?.text || alert.disposal.status}</Tag>
+                {alert.disposal.detail && <span className="muted">{alert.disposal.detail}</span>}
+              </Descriptions.Item>
+            )}
             <Descriptions.Item label="证据完整性"><Tag color={alert.confidence >= 0.9 ? 'success' : 'warning'}>{evidence.evidenceLevel}</Tag></Descriptions.Item>
           </Descriptions>
         </Card>

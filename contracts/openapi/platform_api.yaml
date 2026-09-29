@@ -271,6 +271,95 @@ paths:
         '200':
           description: 成功
 
+  /soar/connectors:
+    get:
+      tags: [SOAR]
+      summary: 联动系统列表、最近检测结果与护栏（不返回任何凭据）
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SoarConnectors' }
+
+  /soar/connectors/{name}/test:
+    post:
+      tags: [SOAR]
+      summary: 测试联动系统连接（需要 rule.manage）
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string, enum: [kong, apisix, nginx, webhook, aliyun_waf, simulator] } }
+      responses:
+        '200': { description: 成功 }
+        '400': { description: 联动系统不存在 }
+
+  /soar/blocks:
+    get:
+      tags: [SOAR]
+      summary: 封禁记录，新的在前
+      parameters:
+        - { name: active, in: query, schema: { type: boolean } }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/SoarBlock' } }
+                  total: { type: integer }
+
+  /soar/block:
+    post:
+      tags: [SOAR]
+      summary: 封禁来源 IP（需要 alert.handle）
+      description: 拒绝内网/回环/特殊地址和受保护网段；时长须在 1 分钟到上限之间；每小时次数有上限。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ip]
+              properties:
+                ip: { type: string }
+                ttl_minutes: { type: integer, minimum: 0, description: 缺省使用默认时长 }
+                reason: { type: string }
+                alert_id: { type: string }
+                connectors: { type: array, items: { type: string }, description: 缺省为全部 }
+      responses:
+        '200':
+          description: 至少一个联动系统成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SoarBlock' }
+        '400': { description: 地址、时长或联动系统无效 }
+        '409': { description: 未配置联动系统 }
+        '429': { description: 超过每小时封禁次数上限 }
+        '502': { description: 所有联动系统都失败 }
+
+  /soar/unblock:
+    post:
+      tags: [SOAR]
+      summary: 解除封禁（需要 alert.handle）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ip]
+              properties:
+                ip: { type: string }
+      responses:
+        '200':
+          description: 已解除
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SoarBlock' }
+        '404': { description: 该地址当前没有生效的封禁 }
+        '502': { description: 部分联动系统解封失败，将自动重试 }
+
   /graph/flow:
     get:
       tags: [Graph]
@@ -600,6 +689,53 @@ securitySchemes:
 # ============================================================
 components:
   schemas:
+    SoarConnectors:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        connectors:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              label: { type: string }
+              status: { type: string, enum: [unchecked, ok, error] }
+              last_checked: { type: string, format: date-time }
+              error: { type: string }
+              active_blocks: { type: integer }
+              experimental: { type: boolean }
+        policy:
+          type: object
+          properties:
+            dry_run: { type: boolean }
+            allow_private: { type: boolean }
+            protected_networks: { type: array, items: { type: string } }
+            default_ttl_minutes: { type: integer }
+            max_ttl_minutes: { type: integer }
+            max_blocks_per_hour: { type: integer }
+    SoarBlock:
+      type: object
+      properties:
+        id: { type: string }
+        ip: { type: string }
+        state: { type: string, enum: [active, released, failed, dry_run] }
+        reason: { type: string }
+        alert_id: { type: string }
+        operator: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        released_at: { type: string, format: date-time }
+        released_by: { type: string, description: 手动解除的用户名，或 system（到期自动解除） }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              connector: { type: string }
+              ok: { type: boolean }
+              error: { type: string }
+              released: { type: boolean }
     GraphNode:
       type: object
       properties:

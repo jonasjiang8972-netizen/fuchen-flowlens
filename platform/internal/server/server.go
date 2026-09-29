@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/iam"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/ingest"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/service"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/soar"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/stream"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
@@ -37,6 +39,7 @@ type PlatformServer struct {
 	dlpEngine      *engine.DLPEngine
 	botEngine      *engine.BotEngine
 	graph          *graph.Store
+	soar           *soar.Manager
 	ingestPipeline *ingest.Pipeline
 	streamer       *stream.Streamer
 	redactor       *redact.Redactor
@@ -104,6 +107,7 @@ func newServer(store storage.Store, agents *service.AgentService, assets *servic
 		dlpEngine:    engine.NewDLPEngine(store, 5),
 		botEngine:    engine.NewBotEngine(store),
 		graph:        graph.NewStore(),
+		soar:         soar.NewManager(soar.DefaultPolicy(), nil, nil, nil),
 		redactor:     redact.New(""),
 	}
 	srv.streamer = stream.New(stream.ConfigFromEnv())
@@ -306,11 +310,66 @@ func (s *PlatformServer) AlertActionHandler(c *gin.Context) {
 		DurationMinutes int    `json:"duration_minutes"`
 	}
 	c.ShouldBindJSON(&req)
+
+	switch action {
+	case "ip_block":
+		s.blockFromAlert(c, id, req.Target, req.DurationMinutes)
+		return
+	case "rate_limit":
+		// No connector can rate-limit yet. Claiming otherwise would tell the
+		// analyst an attacker was slowed down when nothing happened.
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "当前联动系统不支持限流，请使用封禁", "code": "unsupported_action"})
+		return
+	}
 	if err := s.alertService.ExecuteAction(id, action, req.Target, req.DurationMinutes); err != nil {
 		serviceErr(c, err)
 		return
 	}
 	c.JSON(200, gin.H{"status": "ok", "action": action})
+}
+
+// blockFromAlert enforces an IP block for an alert through the connectors and
+// records the outcome on the alert. The alert only moves to in_progress when
+// the block actually took effect.
+func (s *PlatformServer) blockFromAlert(c *gin.Context, alertID, target string, minutes int) {
+	a, err := s.alertService.Get(alertID)
+	if err != nil {
+		serviceErr(c, err)
+		return
+	}
+	ip := strings.TrimSpace(target)
+	if ip == "" {
+		ip = a.SourceIP
+	}
+	if ip == "" {
+		c.JSON(400, gin.H{"error": "该告警没有来源 IP，无法封禁"})
+		return
+	}
+	// The alert action is audited here with the enforcement detail; suppress
+	// the generic audit record.
+	b, err := s.blockIP(c, soarBlockRequest{IP: ip, TTLMinutes: minutes, Reason: a.Title, AlertID: alertID})
+	if err != nil || b == nil || b.State == soar.StateFailed {
+		detail := ""
+		if b != nil {
+			detail = resultsSummary(b.Results)
+			_ = s.alertService.RecordDisposal(alertID, "ip_block", "failed", detail)
+		}
+		if err != nil {
+			soarErr(c, err)
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": "所有联动系统都未能执行封禁", "block": b})
+		return
+	}
+	status := "success"
+	if b.State == soar.StateDryRun {
+		status = "dry_run"
+	}
+	if err := s.alertService.RecordDisposal(alertID, "ip_block", status, resultsSummary(b.Results)); err != nil {
+		serviceErr(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"status": "ok", "action": "ip_block", "block": b})
 }
 
 // ─── Ingest Pipeline ───────────────────────────────────────────

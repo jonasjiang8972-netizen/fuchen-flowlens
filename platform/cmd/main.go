@@ -20,6 +20,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/iam"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/middleware"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/server"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/soar"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 )
 
@@ -116,6 +117,35 @@ func main() {
 				log.Warnf("Initial password (FLOWLENS_ADMIN_PASSWORD not set): %s", res.GeneratedPassword)
 			}
 		}
+	}
+
+	policy, adapters, err := soar.FromEnv(os.Getenv)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if cfg.demo {
+		// Demo mode has no login: anyone could reach the gateways, even just
+		// to probe them with "test connection". Use only the simulator.
+		policy.DryRun = true
+		adapters = []soar.Adapter{soar.Simulator{}}
+	}
+	soarMgr := soar.NewManager(policy, adapters, store, srv.Audit())
+	if err := soarMgr.Load(ctx); err != nil {
+		log.Fatalf("Failed to load blocks: %v", err)
+	}
+	srv.SetSOAR(soarMgr)
+	go soarMgr.Run(ctx)
+	switch {
+	case cfg.demo:
+		log.Warn("SOAR: demo mode — blocks are simulated, nothing is enforced")
+	case len(adapters) == 0:
+		log.Info("SOAR: no connectors configured — alert blocking is unavailable (see docs/SOAR.md)")
+	default:
+		names := make([]string, 0, len(adapters))
+		for _, a := range adapters {
+			names = append(names, a.Name())
+		}
+		log.Infof("SOAR: connectors %v, dry_run=%v", names, policy.DryRun)
 	}
 
 	srv.StartEngines(ctx)
@@ -255,6 +285,12 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	sec.POST("/rules/:id/hit", perm("security", iam.PermRuleManage), srv.HitRuleHandler)
 	sec.GET("/graph/flow", read, srv.FlowGraphHandler)
 	sec.GET("/graph/attack", read, srv.AttackGraphHandler)
+	// Enforcement (SOAR): blocks are guarded by policy and always audited.
+	sec.GET("/soar/connectors", read, srv.SOARConnectorsHandler)
+	sec.POST("/soar/connectors/:name/test", perm("security", iam.PermRuleManage), srv.SOARTestHandler)
+	sec.GET("/soar/blocks", read, srv.SOARBlocksHandler)
+	sec.POST("/soar/block", perm("security", iam.PermAlertHandle), srv.SOARBlockHandler)
+	sec.POST("/soar/unblock", perm("security", iam.PermAlertHandle), srv.SOARUnblockHandler)
 	// Collection coverage as seen by security teams (aggregate only).
 	sec.GET("/coverage/agents", read, srv.AgentHealthSummaryHandler)
 

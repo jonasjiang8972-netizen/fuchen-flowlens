@@ -40,8 +40,9 @@ type AttackStep struct {
 
 type DisposalInfo struct {
 	Action     string    `json:"action"`
-	Status     string    `json:"status"`
+	Status     string    `json:"status"` // success | failed | dry_run
 	ExecutedAt time.Time `json:"executed_at"`
+	Detail     string    `json:"detail,omitempty"`
 }
 
 type AlertDetail struct {
@@ -466,6 +467,14 @@ func (s *AlertService) getRawData(alertID string) map[string]string {
 // ExecuteAction records a disposal action on an alert. The change is saved
 // before it is reported; if saving fails the alert is restored.
 func (s *AlertService) ExecuteAction(alertID, action, target string, durationMin int) error {
+	return s.RecordDisposal(alertID, action, "success", "")
+}
+
+// RecordDisposal notes that an action was taken on an alert and how it went.
+// A successful (or dry-run) action moves the alert to in_progress; a failed
+// one is recorded but leaves the alert's status alone, so it stays in the
+// queue for someone to retry.
+func (s *AlertService) RecordDisposal(alertID, action, status, detail string) error {
 	s.mu.Lock()
 	a, ok := s.alerts[alertID]
 	if !ok {
@@ -473,12 +482,10 @@ func (s *AlertService) ExecuteAction(alertID, action, target string, durationMin
 		return fmt.Errorf("alert %s: %w", alertID, ErrNotFound)
 	}
 	prevStatus, prevDisposal := a.Status, a.Disposal
-	a.Status = "in_progress"
-	a.Disposal = &DisposalInfo{
-		Action:     action,
-		Status:     "success",
-		ExecutedAt: time.Now(),
+	if status != "failed" {
+		a.Status = "in_progress"
 	}
+	a.Disposal = &DisposalInfo{Action: action, Status: status, ExecutedAt: time.Now(), Detail: detail}
 	s.mu.Unlock()
 
 	if err := s.p.writeThrough(context.Background(), []string{alertID}, s.snapshot); err != nil {

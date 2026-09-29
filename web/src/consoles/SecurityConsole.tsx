@@ -3,7 +3,7 @@ import { Tag } from 'antd'
 import {
   AlertOutlined, ApiOutlined, AppstoreOutlined, AreaChartOutlined, AuditOutlined, ControlOutlined,
   DashboardOutlined, DatabaseOutlined, EyeOutlined, FileDoneOutlined, ForkOutlined, LinkOutlined,
-  SafetyCertificateOutlined, TeamOutlined, WarningOutlined,
+  SafetyCertificateOutlined, TeamOutlined, ThunderboltOutlined, WarningOutlined,
 } from '@ant-design/icons'
 import ConsoleShell from '../components/ConsoleShell'
 import type { ShellMenuItem } from '../components/ConsoleShell'
@@ -18,6 +18,7 @@ const DataGovernance = lazy(() => import('../pages/DataGovernance/DataGovernance
 const RiskOps = lazy(() => import('../pages/RiskOps/RiskOps'))
 const FlowMap = lazy(() => import('../pages/FlowMap'))
 const AttackPath = lazy(() => import('../pages/AttackPath'))
+const SoarCenter = lazy(() => import('../pages/SoarCenter'))
 const AIGovernance = lazy(() => import('../pages/AIGovernance'))
 const IdentityCenter = lazy(() => import('../pages/IdentityCenter'))
 const GovernanceDashboard = lazy(() => import('../pages/GovernanceDashboard'))
@@ -26,7 +27,7 @@ const CoverageCenter = lazy(() => import('../pages/CoverageCenter'))
 const WorkOrderCenter = lazy(() => import('../pages/WorkOrderCenter'))
 
 type PageKey = 'dashboard' | 'assets' | 'asset-detail' | 'alerts' | 'alert-detail'
-  | 'data-gov' | 'risk-ops' | 'rules' | 'flow-map' | 'attack-path' | 'identity-center' | 'ai-governance'
+  | 'data-gov' | 'risk-ops' | 'rules' | 'flow-map' | 'attack-path' | 'soar' | 'identity-center' | 'ai-governance'
   | 'governance' | 'contracts' | 'coverage' | 'work-orders'
 
 // API security operations and policy only. Accounts, the audit trail,
@@ -43,13 +44,14 @@ const menuItems: ShellMenuItem[] = [
   { key: 'rules', icon: <ControlOutlined />, label: '检测策略' },
   { key: 'data-gov', icon: <DatabaseOutlined />, label: '数据治理' },
   { key: 'coverage', icon: <WarningOutlined />, label: '覆盖率盲区' },
+  { key: 'soar', icon: <ThunderboltOutlined />, label: '联动处置' },
   { key: 'work-orders', icon: <AuditOutlined />, label: '处置闭环' },
   { key: 'ai-governance', icon: <AppstoreOutlined />, label: 'AI 应用治理' },
   { key: 'risk-ops', icon: <AlertOutlined />, label: '业务风控' },
 ]
 
 const labels: Record<string, string> = {
-  governance: '治理驾驶舱', dashboard: '安全工作台', assets: 'API 资产', alerts: '告警中心', 'flow-map': '调用链路', 'attack-path': '攻击路径',
+  governance: '治理驾驶舱', dashboard: '安全工作台', assets: 'API 资产', alerts: '告警中心', 'flow-map': '调用链路', 'attack-path': '攻击路径', soar: '联动处置',
   contracts: '契约一致性', 'identity-center': '身份与调用方', rules: '检测策略', 'data-gov': '数据治理',
   coverage: '覆盖率盲区', 'work-orders': '处置闭环', 'ai-governance': 'AI 应用治理', 'risk-ops': '业务风控',
   'asset-detail': '资产详情', 'alert-detail': '告警详情',
@@ -78,6 +80,7 @@ export default function SecurityConsole() {
       case 'alerts': return <Alerts onNavigate={navigateTo} />
       case 'alert-detail': return <AlertDetail alertId={detailId} onBack={() => navigateTo('alerts')} onNavigate={navigateTo} />
       case 'flow-map': return <FlowMap onNavigate={navigateTo} />
+      case 'soar': return <SoarCenter onNavigate={navigateTo} />
       case 'attack-path': return <AttackPath alertId={detailId} onNavigate={navigateTo} />
       case 'contracts': return <ContractCenter onNavigate={navigateTo} />
       case 'identity-center': return <IdentityCenter />
