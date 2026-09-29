@@ -496,3 +496,30 @@ func (s *AlertService) RecordDisposal(alertID, action, status, detail string) er
 	}
 	return nil
 }
+
+// alertStatuses are the states an alert can be moved to by a ticket.
+var alertStatuses = map[string]bool{"open": true, "acknowledged": true, "in_progress": true, "resolved": true, "false_positive": true}
+
+// SetStatus moves an alert to a new status, for example when its ticket is
+// closed. It does nothing for an unknown status.
+func (s *AlertService) SetStatus(alertID, status string) error {
+	if !alertStatuses[status] {
+		return fmt.Errorf("invalid alert status %q", status)
+	}
+	s.mu.Lock()
+	a, ok := s.alerts[alertID]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("alert %s: %w", alertID, ErrNotFound)
+	}
+	prev := a.Status
+	a.Status = status
+	s.mu.Unlock()
+	if err := s.p.writeThrough(context.Background(), []string{alertID}, s.snapshot); err != nil {
+		s.mu.Lock()
+		a.Status = prev
+		s.mu.Unlock()
+		return fmt.Errorf("save alert %s: %w", alertID, err)
+	}
+	return nil
+}

@@ -383,6 +383,143 @@ paths:
                       trained_rows: { type: integer, description: 最近一次训练所用的行数 }
                       threshold: { type: number }
 
+  /tickets:
+    get:
+      tags: [Tickets]
+      summary: 工单列表（新的在前）
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, processing, review, done, false_positive] } }
+        - { name: severity, in: query, schema: { type: string, enum: [critical, high, medium, low] } }
+        - { name: owner, in: query, schema: { type: string } }
+        - { name: alert_id, in: query, schema: { type: string } }
+        - { name: q, in: query, description: 匹配标题、编号、负责人、告警 ID, schema: { type: string } }
+        - { name: open, in: query, description: 只返回未关闭的工单, schema: { type: boolean } }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Ticket' } }
+                  total: { type: integer }
+    post:
+      tags: [Tickets]
+      summary: 创建工单（需要 alert.handle）
+      description: 带 alert_id 时，标题、等级、建议处置默认取自告警；该告警已有未关闭工单时返回 409。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string, maxLength: 200 }
+                severity: { type: string, enum: [critical, high, medium, low] }
+                owner: { type: string, maxLength: 100 }
+                action: { type: string, maxLength: 1000 }
+                description: { type: string, maxLength: 4000 }
+                alert_id: { type: string }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ticket' }
+        '400': { description: 字段无效 }
+        '404': { description: 告警不存在 }
+        '409': { description: 该告警已有未关闭的工单（响应含 ticket_id） }
+
+  /tickets/summary:
+    get:
+      tags: [Tickets]
+      summary: 工单概况（开放数、SLA 超时、负责人覆盖率、平均闭环时间）
+      responses:
+        '200': { description: 成功 }
+
+  /tickets/{id}:
+    get:
+      tags: [Tickets]
+      summary: 工单详情（含处理记录）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ticket' }
+        '404': { description: 工单不存在 }
+
+  /tickets/{id}/transition:
+    post:
+      tags: [Tickets]
+      summary: 变更工单状态（需要 alert.handle）
+      description: |
+        pending → processing（需负责人）/ false_positive；processing → review（需处置说明）/ false_positive；
+        review → done / processing（驳回，需说明）/ false_positive；done、false_positive → processing（重新打开，需说明）。
+        提交复核的人不能自己复核通过。
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, enum: [pending, processing, review, done, false_positive] }
+                note: { type: string, maxLength: 2000 }
+                owner: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: 已变更
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ticket' }
+        '400': { description: 缺少必填说明或负责人 }
+        '403': { description: 提交复核的人不能自己通过（code=self_review） }
+        '409': { description: 状态不能这样变更（code=invalid_transition） }
+
+  /tickets/{id}/assign:
+    post:
+      tags: [Tickets]
+      summary: 指派或改派（需要 alert.handle）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [owner]
+              properties:
+                owner: { type: string, maxLength: 100 }
+      responses:
+        '200': { description: 成功 }
+        '400': { description: 负责人无效，或工单已关闭 }
+
+  /tickets/{id}/comment:
+    post:
+      tags: [Tickets]
+      summary: 添加备注（需要 alert.handle）
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, maxLength: 2000 }
+      responses:
+        '200': { description: 成功 }
+
   /graph/flow:
     get:
       tags: [Graph]
@@ -712,6 +849,41 @@ securitySchemes:
 # ============================================================
 components:
   schemas:
+    Ticket:
+      type: object
+      properties:
+        ticket_id: { type: string, example: TKT-0001 }
+        title: { type: string }
+        description: { type: string }
+        severity: { type: string, enum: [critical, high, medium, low] }
+        status: { type: string, enum: [pending, processing, review, done, false_positive] }
+        owner: { type: string }
+        action: { type: string, description: 建议处置 }
+        alert_id: { type: string }
+        related_alerts: { type: array, items: { type: string }, description: 并入本工单的同来源告警（最多列出 50 个） }
+        related_count: { type: integer, description: 并入的告警总数 }
+        auto_created: { type: boolean }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        due_at: { type: string, format: date-time }
+        closed_at: { type: string, format: date-time }
+        submitted_by: { type: string, description: 提交复核的人；不能由此人复核通过 }
+        reopened: { type: integer }
+        open: { type: boolean }
+        overdue: { type: boolean }
+        sla_percent: { type: integer, description: 已用 SLA 的百分比，超时后大于 100 }
+        timeline:
+          type: array
+          items:
+            type: object
+            properties:
+              at: { type: string, format: date-time }
+              actor: { type: string }
+              type: { type: string, enum: [created, assigned, transition, comment, alert_action, repeat] }
+              from: { type: string }
+              to: { type: string }
+              detail: { type: string }
     SoarConnectors:
       type: object
       properties:

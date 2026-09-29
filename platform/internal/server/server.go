@@ -40,6 +40,7 @@ type PlatformServer struct {
 	botEngine      *engine.BotEngine
 	graph          *graph.Store
 	soar           *soar.Manager
+	ticketService  *service.TicketService
 	ingestPipeline *ingest.Pipeline
 	streamer       *stream.Streamer
 	redactor       *redact.Redactor
@@ -63,7 +64,7 @@ type accessDetectionRequest struct {
 // used for development, demo mode and tests.
 func NewPlatformServer(store storage.Store) *PlatformServer {
 	return newServer(store, service.NewAgentService(), service.NewAssetService(),
-		service.NewAlertService(), service.NewRuleService())
+		service.NewAlertService(), service.NewRuleService(), service.NewTicketService())
 }
 
 // NewPlatformServerFrom loads business data from store and persists changes
@@ -86,30 +87,41 @@ func NewPlatformServerFrom(ctx context.Context, store storage.Store, seedDemo bo
 	if err != nil {
 		return nil, err
 	}
-	return newServer(store, agents, assets, alerts, rules), nil
+	tickets, err := service.NewTicketServiceFrom(ctx, store)
+	if err != nil {
+		return nil, err
+	}
+	return newServer(store, agents, assets, alerts, rules, tickets), nil
 }
 
 func newServer(store storage.Store, agents *service.AgentService, assets *service.AssetService,
-	alerts *service.AlertService, rules *service.RuleService) *PlatformServer {
+	alerts *service.AlertService, rules *service.RuleService, tickets *service.TicketService) *PlatformServer {
 	auditSvc := audit.New(store)
 	auditSvc.SetSettings(store)
 	srv := &PlatformServer{
-		store:        store,
-		audit:        auditSvc,
-		iam:          iam.NewService(store, auditSvc),
-		agentService: agents,
-		assetService: assets,
-		alertService: alerts,
-		ruleService:  rules,
-		bolaEngine:   engine.NewBOLAEngine(store),
-		authEngine:   engine.NewAuthFailureEngine(store),
-		bflaEngine:   engine.NewBFLAEngine(store),
-		dlpEngine:    engine.NewDLPEngine(store, 5),
-		botEngine:    engine.NewBotEngine(store),
-		graph:        graph.NewStore(),
-		soar:         soar.NewManager(soar.DefaultPolicy(), nil, nil, nil),
-		redactor:     redact.New(""),
+		store:         store,
+		audit:         auditSvc,
+		iam:           iam.NewService(store, auditSvc),
+		agentService:  agents,
+		assetService:  assets,
+		alertService:  alerts,
+		ruleService:   rules,
+		ticketService: tickets,
+		bolaEngine:    engine.NewBOLAEngine(store),
+		authEngine:    engine.NewAuthFailureEngine(store),
+		bflaEngine:    engine.NewBFLAEngine(store),
+		dlpEngine:     engine.NewDLPEngine(store, 5),
+		botEngine:     engine.NewBotEngine(store),
+		graph:         graph.NewStore(),
+		soar:          soar.NewManager(soar.DefaultPolicy(), nil, nil, nil),
+		redactor:      redact.New(""),
 	}
+	// A ticket's outcome carries back to its alert.
+	tickets.SetAlertSync(func(alertID, status string) {
+		if err := alerts.SetStatus(alertID, status); err != nil {
+			logger.L().Warnf("sync alert %s to %s: %v", alertID, status, err)
+		}
+	})
 	srv.streamer = stream.New(stream.ConfigFromEnv())
 	srv.ingestPipeline = ingest.NewPipeline(20000, srv.processIngestEvent)
 	return srv
@@ -124,7 +136,7 @@ func (s *PlatformServer) FlushAll(ctx context.Context) error {
 	var errs []error
 	for name, flush := range map[string]func(context.Context) (int, error){
 		"assets": s.assetService.Flush, "alerts": s.alertService.Flush,
-		"rules": s.ruleService.Flush, "agents": s.agentService.Flush,
+		"rules": s.ruleService.Flush, "agents": s.agentService.Flush, "tickets": s.ticketService.Flush,
 	} {
 		if _, err := flush(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("flush %s: %w", name, err))
@@ -369,6 +381,7 @@ func (s *PlatformServer) blockFromAlert(c *gin.Context, alertID, target string, 
 		serviceErr(c, err)
 		return
 	}
+	s.ticketService.NoteAlertAction(alertID, actorName(c), fmt.Sprintf("封禁 %s（%s）", b.IP, resultsSummary(b.Results)))
 	c.JSON(200, gin.H{"status": "ok", "action": "ip_block", "block": b})
 }
 
@@ -482,7 +495,7 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 			sourceRequirement = "FR-DLP-003"
 			title = "敏感数据接口自动告警"
 		}
-		s.alertService.CreateDetectionAlert(sourceRequirement, severity, title, reason, req.SourceIP, req.AccountID, riskScore, principal.Confidence)
+		s.raiseAlert(sourceRequirement, severity, title, reason, req.SourceIP, req.AccountID, riskScore, principal.Confidence)
 		s.ruleService.IncrementHit(ruleIDForRequirement(sourceRequirement))
 	}
 
@@ -527,7 +540,7 @@ func (s *PlatformServer) detectSensitiveData(evt shared.APIEvent, req accessDete
 	if res.Score >= 90 {
 		severity = "critical"
 	}
-	s.alertService.CreateDetectionAlert("FR-DLP-001", severity, title, res.Reason, req.SourceIP, req.AccountID, res.Score, confidence)
+	s.raiseAlert("FR-DLP-001", severity, title, res.Reason, req.SourceIP, req.AccountID, res.Score, confidence)
 	s.ruleService.IncrementHit(ruleIDForRequirement("FR-DLP-001"))
 }
 
@@ -548,7 +561,7 @@ func (s *PlatformServer) detectBot(evt shared.APIEvent, req accessDetectionReque
 	if score < 70 {
 		return
 	}
-	s.alertService.CreateDetectionAlert("FR-RISK-002", "medium", "爬虫/自动化客户端自动告警", reason, req.SourceIP, req.AccountID, score, confidence)
+	s.raiseAlert("FR-RISK-002", "medium", "爬虫/自动化客户端自动告警", reason, req.SourceIP, req.AccountID, score, confidence)
 	s.ruleService.IncrementHit(ruleIDForRequirement("FR-RISK-002"))
 }
 
@@ -613,7 +626,7 @@ func (s *PlatformServer) RecordAccessHandler(c *gin.Context) {
 	var alert *service.Alert
 	if riskScore >= 70 {
 		sourceRequirement, severity, title := detectionMetadata(riskScore, reason, req)
-		created := s.alertService.CreateDetectionAlert(
+		created := s.raiseAlert(
 			sourceRequirement,
 			severity,
 			title,

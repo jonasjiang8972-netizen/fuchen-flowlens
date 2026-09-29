@@ -103,6 +103,7 @@ func main() {
 	srv.DemoMode = cfg.demo
 	if cfg.demo || os.Getenv("FLOWLENS_SEED_DEMO") == "true" {
 		srv.SeedDemoGraph()
+		srv.SeedDemoTickets()
 	}
 	srv.SecureCookies = cfg.secureCookies
 	srv.SetRedactionKey(cfg.agentToken)
@@ -289,6 +290,13 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	sec.GET("/rules/:id", read, srv.GetRuleHandler)
 	sec.PUT("/rules/:id", perm("security", iam.PermRuleManage), srv.UpdateRuleHandler)
 	sec.POST("/rules/:id/hit", perm("security", iam.PermRuleManage), srv.HitRuleHandler)
+	sec.GET("/tickets", read, srv.ListTicketsHandler)
+	sec.GET("/tickets/summary", read, srv.TicketSummaryHandler)
+	sec.GET("/tickets/:id", read, srv.GetTicketHandler)
+	sec.POST("/tickets", perm("security", iam.PermAlertHandle), srv.CreateTicketHandler)
+	sec.POST("/tickets/:id/transition", perm("security", iam.PermAlertHandle), srv.TransitionTicketHandler)
+	sec.POST("/tickets/:id/assign", perm("security", iam.PermAlertHandle), srv.AssignTicketHandler)
+	sec.POST("/tickets/:id/comment", perm("security", iam.PermAlertHandle), srv.CommentTicketHandler)
 	sec.GET("/graph/flow", read, srv.FlowGraphHandler)
 	sec.GET("/graph/attack", read, srv.AttackGraphHandler)
 	// Enforcement (SOAR): blocks are guarded by policy and always audited.

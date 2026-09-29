@@ -112,7 +112,7 @@ func (s *PlatformServer) SOARUnblockHandler(c *gin.Context) {
 	if err != nil {
 		res, reason = audit.ResultFailure, err.Error()
 	}
-	s.auditSOARResult(c, "soar.unblock", req.IP, res, reason, detail)
+	s.auditAction(c, "soar.unblock", req.IP, res, reason, detail)
 	if err != nil {
 		if b != nil { // lifted on some connectors; the rest will be retried
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "block": b})
@@ -148,7 +148,7 @@ func (s *PlatformServer) blockIP(c *gin.Context, req soarBlockRequest) (*soar.Bl
 	if b != nil {
 		target = b.IP
 	}
-	s.auditSOARResult(c, "soar.block", target, res, reason, detail)
+	s.auditAction(c, "soar.block", target, res, reason, detail)
 	return b, err
 }
 
@@ -172,12 +172,12 @@ func (s *PlatformServer) auditSOAR(c *gin.Context, event, target, failure, detai
 	if failure != "" {
 		res = audit.ResultFailure
 	}
-	s.auditSOARResult(c, event, target, res, failure, detail)
+	s.auditAction(c, event, target, res, failure, detail)
 }
 
-// auditSOARResult writes the request's audit record itself, so the generic
+// auditAction writes the request's audit record itself, so the generic
 // middleware does not add a second, less informative one.
-func (s *PlatformServer) auditSOARResult(c *gin.Context, event, target, result, reason, detail string) {
+func (s *PlatformServer) auditAction(c *gin.Context, event, target, result, reason, detail string) {
 	rec := storage.AuditRecord{
 		Console: "security", EventType: event, Target: target, Result: result, Reason: reason, Detail: detail,
 		Method: c.Request.Method, Path: c.Request.URL.Path,

@@ -69,7 +69,7 @@ export default function SecurityConsole() {
     // The attack-path page reads detailId as its focus alert, so opening it
     // from the menu must clear any alert left over from a detail page.
     if (id) setDetailId(id)
-    else if (page === 'attack-path') setDetailId('')
+    else if (page === 'attack-path' || page === 'work-orders') setDetailId('')
   }
 
   const renderPage = () => {
@@ -86,7 +86,7 @@ export default function SecurityConsole() {
       case 'identity-center': return <IdentityCenter />
       case 'data-gov': return <DataGovernance onNavigate={navigateTo} />
       case 'coverage': return <CoverageCenter onNavigate={navigateTo} />
-      case 'work-orders': return <WorkOrderCenter onNavigate={navigateTo} />
+      case 'work-orders': return <WorkOrderCenter focusId={detailId} onNavigate={navigateTo} />
       case 'ai-governance': return <AIGovernance />
       case 'risk-ops': return <RiskOps onNavigate={navigateTo} />
       case 'rules': return <Rules onNavigate={navigateTo} />
