@@ -1,6 +1,6 @@
 # 拂尘 FlowLens POC 安装指南
 
-> 适用版本：0.7.0
+> 适用版本：0.7.1
 > 部署方式：Docker Compose 单机部署
 
 本文说明如何在一台 Linux 服务器上用 Docker 安装 FlowLens，用于 POC 测试。安装包内含全部镜像，服务器不需要连接互联网。
@@ -9,13 +9,13 @@
 
 | 文件 | 说明 |
 |------|------|
-| `flowlens-poc-0.7.0-amd64.tar.gz` | 离线安装包（x86_64）。arm64 服务器使用 `-arm64` 版本 |
-| `flowlens-poc-0.7.0-amd64.tar.gz.sha256` | 安装包校验值 |
+| `flowlens-poc-0.7.1-amd64.tar.gz` | 离线安装包（x86_64）。arm64 服务器使用 `-arm64` 版本 |
+| `flowlens-poc-0.7.1-amd64.tar.gz.sha256` | 安装包校验值 |
 
 解压后的目录：
 
 ```
-flowlens-poc-0.7.0-amd64/
+flowlens-poc-0.7.1-amd64/
 ├── install.sh              # 安装脚本
 ├── flowlens-ctl.sh         # 运维脚本：启停、日志、备份、恢复、升级、卸载
 ├── docker-compose.yaml     # 服务编排
@@ -24,7 +24,7 @@ flowlens-poc-0.7.0-amd64/
 │   ├── agent-config.yaml   # Agent 配置
 │   └── demo-traffic.sh     # 演示流量生成器
 ├── images/
-│   └── flowlens-images-0.7.0-amd64.tar.gz   # 全部镜像
+│   └── flowlens-images-0.7.1-amd64.tar.gz   # 全部镜像
 ├── docs/                   # 本文档、数据库性能说明
 ├── VERSION
 └── SHA256SUMS              # 包内各文件的校验值
@@ -34,9 +34,9 @@ flowlens-poc-0.7.0-amd64/
 
 | 镜像 | 说明 |
 |------|------|
-| `flowlens-platform:0.7.0` | 平台服务（API、检测引擎、账号与审计），以非 root 用户运行 |
-| `flowlens-web:0.7.0` | 控制台（nginx），以非 root 用户运行，提供 HTTP/HTTPS |
-| `flowlens-agent:0.7.0` | 流量采集 Agent（网关日志模式） |
+| `flowlens-platform:0.7.1` | 平台服务（API、检测引擎、账号与审计），以非 root 用户运行 |
+| `flowlens-web:0.7.1` | 控制台（nginx），以非 root 用户运行，提供 HTTP/HTTPS |
+| `flowlens-agent:0.7.1` | 流量采集 Agent（网关日志模式） |
 | `postgres:16-alpine` | 数据库 |
 
 ## 2. 环境要求
@@ -65,11 +65,11 @@ flowlens-poc-0.7.0-amd64/
 
 ```bash
 # 1. 上传安装包到服务器后校验
-sha256sum -c flowlens-poc-0.7.0-amd64.tar.gz.sha256
+sha256sum -c flowlens-poc-0.7.1-amd64.tar.gz.sha256
 
 # 2. 解压
-tar -xzf flowlens-poc-0.7.0-amd64.tar.gz
-cd flowlens-poc-0.7.0-amd64
+tar -xzf flowlens-poc-0.7.1-amd64.tar.gz
+cd flowlens-poc-0.7.1-amd64
 
 # 3. 安装并启动（附带演示流量，便于立即看到效果）
 ./install.sh --demo
@@ -86,7 +86,7 @@ cd flowlens-poc-0.7.0-amd64
 安装完成时输出类似：
 
 ```
-  FlowLens 0.7.0 已启动
+  FlowLens 0.7.1 已启动
 
   控制台地址    http://10.0.0.10:8080
   内置账号      sysadmin    系统管理员  -> 系统管理后台
@@ -177,7 +177,7 @@ Agent 采用网关日志模式：读取 API 网关的 JSON 格式访问日志，
 
 ### 5.2 Agent 部署在网关服务器上
 
-1. 把镜像包复制到网关服务器，执行 `gzip -dc flowlens-images-0.7.0-amd64.tar.gz | docker load`。
+1. 把镜像包复制到网关服务器，执行 `gzip -dc flowlens-images-0.7.1-amd64.tar.gz | docker load`。
 2. 复制 `conf/agent-config.yaml` 到网关服务器，修改 `management` 部分：
 
    ```yaml
@@ -197,7 +197,7 @@ Agent 采用网关日志模式：读取 API 网关的 JSON 格式访问日志，
      -v /path/to/agent-config.yaml:/etc/flowlens/agent-config.yaml:ro \
      -v /path/to/server.crt:/etc/flowlens/ca.crt:ro \
      -v /var/log/gateway:/var/log/gateway:ro \
-     flowlens-agent:0.7.0
+     flowlens-agent:0.7.1
    ```
 
 注意：
@@ -257,7 +257,7 @@ Agent 采用网关日志模式：读取 API 网关的 JSON 格式访问日志，
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| `FLOWLENS_VERSION` | 0.7.0 | 镜像版本，由安装和升级脚本维护 |
+| `FLOWLENS_VERSION` | 0.7.1 | 镜像版本，由安装和升级脚本维护 |
 | `POSTGRES_PASSWORD` | 随机 | 数据库口令，只能包含字母、数字和 `. _ ~ -`。数据库初始化后修改无效 |
 | `FLOWLENS_AGENT_TOKEN` | 随机 | Agent 认证令牌，修改后所有 Agent 须同步修改 |
 | `FLOWLENS_ADMIN_PASSWORD` | 随机 | 内置账号初始口令，只在数据库为空时生效 |
