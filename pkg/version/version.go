@@ -2,6 +2,6 @@ package version
 
 const (
 	Name         = "FlowLens"
-	Version      = "0.7.2"
-	AgentVersion = "0.7.2"
+	Version      = "1.0.0"
+	AgentVersion = "1.0.0"
 )

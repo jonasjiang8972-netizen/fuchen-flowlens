@@ -4,7 +4,7 @@ export type Role = 'sys_admin' | 'audit_admin' | 'sec_admin' | 'analyst' | 'view
 export type Console = 'admin' | 'security'
 export type Permission =
   | 'user.manage' | 'policy.manage' | 'agent.manage' | 'system.manage' | 'audit.read'
-  | 'security.read' | 'rule.manage' | 'alert.handle' | 'asset.manage'
+  | 'security.read' | 'rule.manage' | 'alert.handle' | 'asset.manage' | 'report.read'
 
 export interface UserView {
   id: string
@@ -59,7 +59,7 @@ export const ROLE_NAMES: Record<Role, string> = {
 const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
   sys_admin: ['user.manage', 'policy.manage', 'agent.manage', 'system.manage'],
   audit_admin: ['audit.read'],
-  sec_admin: ['security.read', 'rule.manage', 'alert.handle', 'asset.manage'],
+  sec_admin: ['security.read', 'rule.manage', 'alert.handle', 'asset.manage', 'report.read'],
   analyst: ['security.read', 'alert.handle', 'asset.manage'],
   viewer: ['security.read'],
 }

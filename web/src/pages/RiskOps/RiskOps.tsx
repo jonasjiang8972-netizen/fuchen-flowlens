@@ -7,12 +7,6 @@ const mockTickets = [
   { id: 'TKT-003', title: '脱敏缺陷修复跟进', severity: 'medium', status: 'done', assignee: '李四', created: '1天前' },
 ]
 
-const mockSoar = [
-  { name: 'Kong 网关', status: 'online', type: 'API 网关', lastSync: '10秒前' },
-  { name: '阿里云 WAF', status: 'online', type: 'WAF', lastSync: '1分钟前' },
-  { name: 'SOAR 平台', status: 'offline', type: '安全编排', lastSync: '5分钟前' },
-]
-
 export default function RiskOps({ onNavigate }: { onNavigate: (page: string, id?: string) => void }) {
   const [tab, setTab] = useState('tickets')
 
@@ -37,8 +31,8 @@ export default function RiskOps({ onNavigate }: { onNavigate: (page: string, id?
           <div style={{ fontSize: 28, fontWeight: 700, color: '#D14D3D' }}>{warnTicketCount}</div>
         </Card>
         <Card className="panel-card">
-          <div style={{ fontSize: 12, color: '#8A93A3' }}>已对接联动系统</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: '#3FBDAA' }}>{mockSoar.filter(s => s.status === 'online').length}/{mockSoar.length}</div>
+          <div style={{ fontSize: 12, color: '#8A93A3' }}>联动处置</div>
+          <div style={{ fontSize: 14, marginTop: 8 }}>联动系统的配置、封禁与解封已迁移到 <a onClick={() => onNavigate('soar')}>联动处置</a> 页面。</div>
         </Card>
       </div>
 
@@ -51,27 +45,6 @@ export default function RiskOps({ onNavigate }: { onNavigate: (page: string, id?
               ))}
             </div>
             <Table columns={ticketCols} data={mockTickets} pagination={false} />
-          </Card>
-        </Tabs.TabPane>
-        <Tabs.TabPane key="soar" title="SOAR 联动配置">
-          <Card className="panel-card">
-            <Table
-              columns={[
-                { title: '系统名称', dataIndex: 'name', key: 'name' },
-                { title: '类型', dataIndex: 'type', key: 'type' },
-                { title: '连接状态', dataIndex: 'status', key: 'status',
-                  render: (s: string) => (
-                    <span>
-                      <span className={`health-dot health-dot--${s}`} style={{ marginRight: 4 }} />
-                      {s === 'online' ? '在线' : '离线'}
-                    </span>
-                  ),
-                },
-                { title: '最后同步', dataIndex: 'lastSync', key: 'lastSync' },
-              ]}
-              data={mockSoar}
-              pagination={false}
-            />
           </Card>
         </Tabs.TabPane>
       </Tabs>

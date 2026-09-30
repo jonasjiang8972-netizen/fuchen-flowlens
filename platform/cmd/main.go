@@ -7,8 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -17,9 +19,12 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/auth"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/compliance"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/iam"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/middleware"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/server"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/soar"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 )
 
@@ -98,6 +103,10 @@ func main() {
 		srv = server.NewPlatformServer(store)
 	}
 	srv.DemoMode = cfg.demo
+	if cfg.demo || os.Getenv("FLOWLENS_SEED_DEMO") == "true" {
+		srv.SeedDemoGraph()
+		srv.SeedDemoTickets()
+	}
 	srv.SecureCookies = cfg.secureCookies
 	srv.SetRedactionKey(cfg.agentToken)
 
@@ -114,6 +123,44 @@ func main() {
 			}
 		}
 	}
+
+	policy, adapters, err := soar.FromEnv(os.Getenv)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if cfg.demo {
+		// Demo mode has no login: anyone could reach the gateways, even just
+		// to probe them with "test connection". Use only the simulator.
+		policy.DryRun = true
+		adapters = []soar.Adapter{soar.Simulator{}}
+	}
+	if err := configureBOLAML(srv, os.Getenv); err != nil {
+		log.Fatalf("%v", err)
+	}
+	soarMgr := soar.NewManager(policy, adapters, store, srv.Audit())
+	if err := soarMgr.Load(ctx); err != nil {
+		log.Fatalf("Failed to load blocks: %v", err)
+	}
+	srv.SetSOAR(soarMgr)
+	go soarMgr.Run(ctx)
+	switch {
+	case cfg.demo:
+		log.Warn("SOAR: demo mode — blocks are simulated, nothing is enforced")
+	case len(adapters) == 0:
+		log.Info("SOAR: no connectors configured — alert blocking is unavailable (see docs/SOAR.md)")
+	default:
+		names := make([]string, 0, len(adapters))
+		for _, a := range adapters {
+			names = append(names, a.Name())
+		}
+		log.Infof("SOAR: connectors %v, dry_run=%v", names, policy.DryRun)
+	}
+
+	srv.SetDeployment(compliance.Deployment{
+		DBPersistent: cfg.dbDSN != "", DBSSLMode: dsnSSLMode(cfg.dbDSN),
+		TLS: cfg.tlsCert != "", SecureCookies: cfg.secureCookies, ClientCertRequired: cfg.tlsClientCA != "",
+		AgentTokenSet: cfg.agentToken != "",
+	})
 
 	srv.StartEngines(ctx)
 	srv.StartMaintenance(ctx)
@@ -245,12 +292,31 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	sec.POST("/alerts/:id/:action", perm("security", iam.PermAlertHandle), srv.AlertActionHandler)
 	sec.POST("/detect/access", perm("security", iam.PermRuleManage), srv.RecordAccessHandler)
 	sec.GET("/detect/events", read, srv.ListDetectionEventsHandler)
+	sec.GET("/detect/ml", read, srv.DetectionMLHandler)
 	sec.GET("/rules", read, srv.ListRulesHandler)
 	sec.GET("/rules/categories", read, srv.ListRuleCategoriesHandler)
 	sec.GET("/rules/:id", read, srv.GetRuleHandler)
 	sec.PUT("/rules/:id", perm("security", iam.PermRuleManage), srv.UpdateRuleHandler)
 	sec.POST("/rules/:id/hit", perm("security", iam.PermRuleManage), srv.HitRuleHandler)
-	sec.GET("/sensitive/flow-map", read, srv.FlowMapHandler)
+	sec.GET("/tickets", read, srv.ListTicketsHandler)
+	sec.GET("/tickets/summary", read, srv.TicketSummaryHandler)
+	sec.GET("/tickets/:id", read, srv.GetTicketHandler)
+	sec.POST("/tickets", perm("security", iam.PermAlertHandle), srv.CreateTicketHandler)
+	sec.POST("/tickets/:id/transition", perm("security", iam.PermAlertHandle), srv.TransitionTicketHandler)
+	sec.POST("/tickets/:id/assign", perm("security", iam.PermAlertHandle), srv.AssignTicketHandler)
+	sec.POST("/tickets/:id/comment", perm("security", iam.PermAlertHandle), srv.CommentTicketHandler)
+	report := perm("security", iam.PermReportRead)
+	sec.GET("/reports/compliance/templates", report, srv.ComplianceTemplatesHandler)
+	sec.GET("/reports/compliance", report, srv.ComplianceReportHandler)
+	sec.GET("/reports/compliance/export", report, srv.ComplianceExportHandler)
+	sec.GET("/graph/flow", read, srv.FlowGraphHandler)
+	sec.GET("/graph/attack", read, srv.AttackGraphHandler)
+	// Enforcement (SOAR): blocks are guarded by policy and always audited.
+	sec.GET("/soar/connectors", read, srv.SOARConnectorsHandler)
+	sec.POST("/soar/connectors/:name/test", perm("security", iam.PermRuleManage), srv.SOARTestHandler)
+	sec.GET("/soar/blocks", read, srv.SOARBlocksHandler)
+	sec.POST("/soar/block", perm("security", iam.PermAlertHandle), srv.SOARBlockHandler)
+	sec.POST("/soar/unblock", perm("security", iam.PermAlertHandle), srv.SOARUnblockHandler)
 	// Collection coverage as seen by security teams (aggregate only).
 	sec.GET("/coverage/agents", read, srv.AgentHealthSummaryHandler)
 
@@ -329,4 +395,44 @@ func splitList(v string) []string {
 		}
 	}
 	return out
+}
+
+// configureBOLAML applies FLOWLENS_BOLA_ML ("off" or "false" disables the
+// anomaly model) and FLOWLENS_BOLA_ML_THRESHOLD (score in (0.5, 1)).
+func configureBOLAML(srv *server.PlatformServer, getenv func(string) string) error {
+	enabled := true
+	switch strings.ToLower(strings.TrimSpace(getenv("FLOWLENS_BOLA_ML"))) {
+	case "off", "false", "0", "no":
+		enabled = false
+	}
+	threshold := engine.DefaultMLThreshold
+	if v := strings.TrimSpace(getenv("FLOWLENS_BOLA_ML_THRESHOLD")); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("FLOWLENS_BOLA_ML_THRESHOLD: %q 不是有效数字", v)
+		}
+		threshold = f
+	}
+	if err := srv.ConfigureBOLAML(enabled, threshold); err != nil {
+		return fmt.Errorf("FLOWLENS_BOLA_ML_THRESHOLD: %w", err)
+	}
+	return nil
+}
+
+// dsnSSLMode returns the sslmode of a PostgreSQL connection string, or "" when
+// it cannot be told (a keyword/value DSN without one, or none configured).
+// Both URL and "key=value" forms are understood.
+func dsnSSLMode(dsn string) string {
+	if dsn == "" {
+		return ""
+	}
+	if u, err := url.Parse(dsn); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
+		return u.Query().Get("sslmode")
+	}
+	for _, f := range strings.Fields(dsn) {
+		if v, ok := strings.CutPrefix(f, "sslmode="); ok {
+			return strings.Trim(v, "'")
+		}
+	}
+	return ""
 }

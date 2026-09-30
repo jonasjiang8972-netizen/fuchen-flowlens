@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -13,10 +14,13 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/sensitive"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/audit"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/compliance"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/graph"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/iam"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/ingest"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/service"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/soar"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/stream"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
@@ -35,6 +39,10 @@ type PlatformServer struct {
 	bflaEngine     *engine.BFLAEngine
 	dlpEngine      *engine.DLPEngine
 	botEngine      *engine.BotEngine
+	graph          *graph.Store
+	soar           *soar.Manager
+	ticketService  *service.TicketService
+	deployment     compliance.Deployment
 	ingestPipeline *ingest.Pipeline
 	streamer       *stream.Streamer
 	redactor       *redact.Redactor
@@ -58,7 +66,7 @@ type accessDetectionRequest struct {
 // used for development, demo mode and tests.
 func NewPlatformServer(store storage.Store) *PlatformServer {
 	return newServer(store, service.NewAgentService(), service.NewAssetService(),
-		service.NewAlertService(), service.NewRuleService())
+		service.NewAlertService(), service.NewRuleService(), service.NewTicketService())
 }
 
 // NewPlatformServerFrom loads business data from store and persists changes
@@ -81,28 +89,41 @@ func NewPlatformServerFrom(ctx context.Context, store storage.Store, seedDemo bo
 	if err != nil {
 		return nil, err
 	}
-	return newServer(store, agents, assets, alerts, rules), nil
+	tickets, err := service.NewTicketServiceFrom(ctx, store)
+	if err != nil {
+		return nil, err
+	}
+	return newServer(store, agents, assets, alerts, rules, tickets), nil
 }
 
 func newServer(store storage.Store, agents *service.AgentService, assets *service.AssetService,
-	alerts *service.AlertService, rules *service.RuleService) *PlatformServer {
+	alerts *service.AlertService, rules *service.RuleService, tickets *service.TicketService) *PlatformServer {
 	auditSvc := audit.New(store)
 	auditSvc.SetSettings(store)
 	srv := &PlatformServer{
-		store:        store,
-		audit:        auditSvc,
-		iam:          iam.NewService(store, auditSvc),
-		agentService: agents,
-		assetService: assets,
-		alertService: alerts,
-		ruleService:  rules,
-		bolaEngine:   engine.NewBOLAEngine(store),
-		authEngine:   engine.NewAuthFailureEngine(store),
-		bflaEngine:   engine.NewBFLAEngine(store),
-		dlpEngine:    engine.NewDLPEngine(store, 5),
-		botEngine:    engine.NewBotEngine(store),
-		redactor:     redact.New(""),
+		store:         store,
+		audit:         auditSvc,
+		iam:           iam.NewService(store, auditSvc),
+		agentService:  agents,
+		assetService:  assets,
+		alertService:  alerts,
+		ruleService:   rules,
+		ticketService: tickets,
+		bolaEngine:    engine.NewBOLAEngine(store),
+		authEngine:    engine.NewAuthFailureEngine(store),
+		bflaEngine:    engine.NewBFLAEngine(store),
+		dlpEngine:     engine.NewDLPEngine(store, 5),
+		botEngine:     engine.NewBotEngine(store),
+		graph:         graph.NewStore(),
+		soar:          soar.NewManager(soar.DefaultPolicy(), nil, nil, nil),
+		redactor:      redact.New(""),
 	}
+	// A ticket's outcome carries back to its alert.
+	tickets.SetAlertSync(func(alertID, status string) {
+		if err := alerts.SetStatus(alertID, status); err != nil {
+			logger.L().Warnf("sync alert %s to %s: %v", alertID, status, err)
+		}
+	})
 	srv.streamer = stream.New(stream.ConfigFromEnv())
 	srv.ingestPipeline = ingest.NewPipeline(20000, srv.processIngestEvent)
 	return srv
@@ -117,7 +138,7 @@ func (s *PlatformServer) FlushAll(ctx context.Context) error {
 	var errs []error
 	for name, flush := range map[string]func(context.Context) (int, error){
 		"assets": s.assetService.Flush, "alerts": s.alertService.Flush,
-		"rules": s.ruleService.Flush, "agents": s.agentService.Flush,
+		"rules": s.ruleService.Flush, "agents": s.agentService.Flush, "tickets": s.ticketService.Flush,
 	} {
 		if _, err := flush(ctx); err != nil {
 			errs = append(errs, fmt.Errorf("flush %s: %w", name, err))
@@ -130,6 +151,7 @@ func (s *PlatformServer) StartEngines(ctx context.Context) {
 	go s.bolaEngine.StartCleanup(ctx)
 	go s.authEngine.StartCleanup(ctx)
 	go s.botEngine.StartCleanup(ctx)
+	go s.graph.Cleanup(ctx)
 	s.ingestPipeline.Start(ctx, 4)
 	if s.streamer.Enabled() {
 		logger.L().Info("Streaming backbone enabled (Kafka/ClickHouse)")
@@ -302,11 +324,67 @@ func (s *PlatformServer) AlertActionHandler(c *gin.Context) {
 		DurationMinutes int    `json:"duration_minutes"`
 	}
 	c.ShouldBindJSON(&req)
+
+	switch action {
+	case "ip_block":
+		s.blockFromAlert(c, id, req.Target, req.DurationMinutes)
+		return
+	case "rate_limit":
+		// No connector can rate-limit yet. Claiming otherwise would tell the
+		// analyst an attacker was slowed down when nothing happened.
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "当前联动系统不支持限流，请使用封禁", "code": "unsupported_action"})
+		return
+	}
 	if err := s.alertService.ExecuteAction(id, action, req.Target, req.DurationMinutes); err != nil {
 		serviceErr(c, err)
 		return
 	}
 	c.JSON(200, gin.H{"status": "ok", "action": action})
+}
+
+// blockFromAlert enforces an IP block for an alert through the connectors and
+// records the outcome on the alert. The alert only moves to in_progress when
+// the block actually took effect.
+func (s *PlatformServer) blockFromAlert(c *gin.Context, alertID, target string, minutes int) {
+	a, err := s.alertService.Get(alertID)
+	if err != nil {
+		serviceErr(c, err)
+		return
+	}
+	ip := strings.TrimSpace(target)
+	if ip == "" {
+		ip = a.SourceIP
+	}
+	if ip == "" {
+		c.JSON(400, gin.H{"error": "该告警没有来源 IP，无法封禁"})
+		return
+	}
+	// The alert action is audited here with the enforcement detail; suppress
+	// the generic audit record.
+	b, err := s.blockIP(c, soarBlockRequest{IP: ip, TTLMinutes: minutes, Reason: a.Title, AlertID: alertID})
+	if err != nil || b == nil || b.State == soar.StateFailed {
+		detail := ""
+		if b != nil {
+			detail = resultsSummary(b.Results)
+			_ = s.alertService.RecordDisposal(alertID, "ip_block", "failed", detail)
+		}
+		if err != nil {
+			soarErr(c, err)
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": "所有联动系统都未能执行封禁", "block": b})
+		return
+	}
+	status := "success"
+	if b.State == soar.StateDryRun {
+		status = "dry_run"
+	}
+	if err := s.alertService.RecordDisposal(alertID, "ip_block", status, resultsSummary(b.Results)); err != nil {
+		serviceErr(c, err)
+		return
+	}
+	s.ticketService.NoteAlertAction(alertID, actorName(c), fmt.Sprintf("封禁 %s（%s）", b.IP, resultsSummary(b.Results)))
+	c.JSON(200, gin.H{"status": "ok", "action": "ip_block", "block": b})
 }
 
 // ─── Ingest Pipeline ───────────────────────────────────────────
@@ -419,9 +497,15 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 			sourceRequirement = "FR-DLP-003"
 			title = "敏感数据接口自动告警"
 		}
-		s.alertService.CreateDetectionAlert(sourceRequirement, severity, title, reason, req.SourceIP, req.AccountID, riskScore, principal.Confidence)
+		s.raiseAlert(sourceRequirement, severity, title, reason, req.SourceIP, req.AccountID, riskScore, principal.Confidence)
 		s.ruleService.IncrementHit(ruleIDForRequirement(sourceRequirement))
 	}
+
+	s.graph.Observe(graph.Observation{
+		Time: evt.Timestamp, SrcIP: evt.Network.SrcIP, Account: principal.ID, Role: principal.Role,
+		Service: graphService(evt), Method: evt.Application.Method, Path: evt.Application.PathNormalized,
+		Status: int(evt.Application.StatusCode), BytesOut: evt.Application.BytesOut, Fields: sensitiveFields,
+	})
 
 	s.detectSensitiveData(evt, req, findings, principal.Confidence)
 	s.detectBot(evt, req, principal.Confidence)
@@ -458,7 +542,7 @@ func (s *PlatformServer) detectSensitiveData(evt shared.APIEvent, req accessDete
 	if res.Score >= 90 {
 		severity = "critical"
 	}
-	s.alertService.CreateDetectionAlert("FR-DLP-001", severity, title, res.Reason, req.SourceIP, req.AccountID, res.Score, confidence)
+	s.raiseAlert("FR-DLP-001", severity, title, res.Reason, req.SourceIP, req.AccountID, res.Score, confidence)
 	s.ruleService.IncrementHit(ruleIDForRequirement("FR-DLP-001"))
 }
 
@@ -479,7 +563,7 @@ func (s *PlatformServer) detectBot(evt shared.APIEvent, req accessDetectionReque
 	if score < 70 {
 		return
 	}
-	s.alertService.CreateDetectionAlert("FR-RISK-002", "medium", "爬虫/自动化客户端自动告警", reason, req.SourceIP, req.AccountID, score, confidence)
+	s.raiseAlert("FR-RISK-002", "medium", "爬虫/自动化客户端自动告警", reason, req.SourceIP, req.AccountID, score, confidence)
 	s.ruleService.IncrementHit(ruleIDForRequirement("FR-RISK-002"))
 }
 
@@ -544,7 +628,7 @@ func (s *PlatformServer) RecordAccessHandler(c *gin.Context) {
 	var alert *service.Alert
 	if riskScore >= 70 {
 		sourceRequirement, severity, title := detectionMetadata(riskScore, reason, req)
-		created := s.alertService.CreateDetectionAlert(
+		created := s.raiseAlert(
 			sourceRequirement,
 			severity,
 			title,
@@ -869,21 +953,6 @@ func (s *PlatformServer) ListRuleCategoriesHandler(c *gin.Context) {
 
 // ─── Flow Map ──────────────────────────────────────────────────
 
-func (s *PlatformServer) FlowMapHandler(c *gin.Context) {
-	nodes := []map[string]interface{}{
-		{"id": "user-service", "type": "service", "label": "用户服务"},
-		{"id": "order-service", "type": "service", "label": "订单服务"},
-		{"id": "phone", "type": "field", "label": "手机号"},
-		{"id": "id_card", "type": "field", "label": "身份证"},
-	}
-	edges := []map[string]interface{}{
-		{"source": "user-service", "target": "phone", "field_name": "phone", "call_count": 45230},
-		{"source": "user-service", "target": "id_card", "field_name": "id_card", "call_count": 1200},
-		{"source": "order-service", "target": "phone", "field_name": "phone", "call_count": 28720},
-	}
-	c.JSON(200, gin.H{"nodes": nodes, "edges": edges})
-}
-
 // serviceErr maps service errors to responses without exposing internal
 // details (such as database errors) to the client.
 func serviceErr(c *gin.Context, err error) {
@@ -893,4 +962,15 @@ func serviceErr(c *gin.Context, err error) {
 	}
 	logger.L().Errorf("%s %s: %v", c.Request.Method, c.Request.URL.Path, err)
 	c.JSON(500, gin.H{"error": "保存失败，请稍后重试"})
+}
+
+// ConfigureBOLAML sets whether the BOLA anomaly model is used and the score at
+// which it flags an account.
+func (s *PlatformServer) ConfigureBOLAML(enabled bool, threshold float64) error {
+	return s.bolaEngine.ConfigureML(enabled, threshold)
+}
+
+// DetectionMLHandler reports the state of the anomaly model.
+func (s *PlatformServer) DetectionMLHandler(c *gin.Context) {
+	c.JSON(200, gin.H{"bola": s.bolaEngine.MLStatus()})
 }

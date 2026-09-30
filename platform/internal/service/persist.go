@@ -12,10 +12,11 @@ var ErrNotFound = errors.New("not found")
 
 // Document kinds persisted through a Repository.
 const (
-	KindAsset = "asset"
-	KindAlert = "alert"
-	KindRule  = "rule"
-	KindAgent = "agent"
+	KindAsset  = "asset"
+	KindAlert  = "alert"
+	KindRule   = "rule"
+	KindAgent  = "agent"
+	KindTicket = "ticket"
 )
 
 // Repository persists business records as JSON documents keyed by kind and

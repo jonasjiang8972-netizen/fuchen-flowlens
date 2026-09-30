@@ -54,16 +54,20 @@ export default function Alerts({ onNavigate }: Props) {
   const canHandle = can('alert.handle')
 
   const handleAction = async (alertId: string, action: string) => {
+    let res: any
     try {
-      await executeAlertAction(alertId, action)
+      res = await executeAlertAction(alertId, action)
     } catch (err) {
       message.error(errorMessage(err))
+      // A failed block is recorded on the alert; refresh so the row shows it.
+      alertService.list().then(setAlerts)
       return
     }
+    const dryRun = res?.block?.state === 'dry_run'
     setAlerts(prev => prev.map(a =>
-      a.alert_id === alertId ? { ...a, status: 'in_progress', disposal: { action, status: 'success' } } : a
+      a.alert_id === alertId ? { ...a, status: 'in_progress', disposal: { action, status: dryRun ? 'dry_run' : 'success' } } : a
     ))
-    message.success(action === 'ip_block' ? '已下发封禁' : '已下发限流')
+    message.success(dryRun ? '已记录封禁（演练模式，未真实封禁）' : '已下发封禁')
   }
 
   const sources = useMemo(() => {
@@ -164,9 +168,6 @@ export default function Alerts({ onNavigate }: Props) {
           <Button size="small" onClick={(e) => { e.stopPropagation(); onNavigate('alert-detail', record.alert_id) }}>详情</Button>
           {record.status === 'open' && canHandle && (
             <Button size="small" type="primary" danger onClick={(e) => { e.stopPropagation(); handleAction(record.alert_id, 'ip_block') }}>封禁</Button>
-          )}
-          {record.status === 'open' && canHandle && (
-            <Button size="small" onClick={(e) => { e.stopPropagation(); handleAction(record.alert_id, 'rate_limit') }}>限流</Button>
           )}
         </Space>
       ),

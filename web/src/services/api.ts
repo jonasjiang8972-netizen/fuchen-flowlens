@@ -80,7 +80,7 @@ export const claimAsset = (assetId: string, owner: string) =>
   write(() => request(`/assets/${assetId}/claim`, { method: 'POST', body: JSON.stringify({ owner }) }), { status: 'ok' })
 
 export const executeAlertAction = (alertId: string, action: string) =>
-  write(() => request(`/alerts/${alertId}/${action}`, { method: 'POST', body: '{}' }), { status: 'ok', action })
+  write(() => request<any>(`/alerts/${alertId}/${action}`, { method: 'POST', body: '{}' }), { status: 'ok', action, block: { state: 'dry_run' } } as any)
 
 // ─── Detection policy ────────────────────────────────────────────
 

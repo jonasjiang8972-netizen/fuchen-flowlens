@@ -35,6 +35,7 @@ const (
 	PermRuleManage   Permission = "rule.manage"
 	PermAlertHandle  Permission = "alert.handle"
 	PermAssetManage  Permission = "asset.manage"
+	PermReportRead   Permission = "report.read" // compliance reports: a posture summary of the whole platform
 )
 
 // Console names which front end a role works in.
@@ -59,7 +60,7 @@ var roles = []RoleInfo{
 	{RoleAuditAdmin, "审计管理员", ConsoleAdmin, "查询、校验和导出审计日志；不能做其他任何操作",
 		[]Permission{PermAuditRead}},
 	{RoleSecAdmin, "安全管理员", ConsoleSecurity, "配置检测策略、处置告警、管理资产归属",
-		[]Permission{PermSecurityRead, PermRuleManage, PermAlertHandle, PermAssetManage}},
+		[]Permission{PermSecurityRead, PermRuleManage, PermAlertHandle, PermAssetManage, PermReportRead}},
 	{RoleAnalyst, "安全分析员", ConsoleSecurity, "研判和处置告警、认领资产；不能修改检测策略",
 		[]Permission{PermSecurityRead, PermAlertHandle, PermAssetManage}},
 	{RoleViewer, "只读用户", ConsoleSecurity, "查看 API 安全数据，不能做任何修改",

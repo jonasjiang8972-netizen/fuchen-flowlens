@@ -13,8 +13,9 @@ const permissionRows: { perm: string; name: string; area: string }[] = [
   { perm: 'audit.read', name: '审计日志查询、完整性校验、导出', area: '系统管理后台' },
   { perm: 'security.read', name: '查看 API 资产、告警、链路、检测策略', area: 'API 安全平台' },
   { perm: 'rule.manage', name: '检测策略配置', area: 'API 安全平台' },
-  { perm: 'alert.handle', name: '告警研判与处置（封禁、限流）', area: 'API 安全平台' },
+  { perm: 'alert.handle', name: '告警研判与处置（封禁、工单流转）', area: 'API 安全平台' },
   { perm: 'asset.manage', name: '资产认领与归属', area: 'API 安全平台' },
+  { perm: 'report.read', name: '合规报告（全平台安全状况汇总）', area: 'API 安全平台' },
 ]
 
 export default function Roles() {

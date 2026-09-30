@@ -57,6 +57,29 @@
 - 提前感知未授权访问、参数配置不当等隐患
 - 指导研发漏洞修复
 
+## v1.0.0 已实现的能力
+
+| 能力 | 说明 | 文档 |
+|---|---|---|
+| 流量采集与接入 | Agent（网关日志、eBPF 接口）→ 平台，带去重和有界队列；采集端脱敏 | `docs/DATA_PIPELINE.md` |
+| API 资产与敏感数据 | 资产发现与统计、敏感数据识别与脱敏核验 | `docs/DETECTION_ENGINES.md` |
+| 检测引擎 | BOLA（规则 + 孤立森林）、BFLA、认证失效/撞库、Bot、敏感数据 | `docs/DETECTION_ENGINES.md` |
+| 调用链路与攻击路径 | 由真实流量聚合的关系图（D3），把同一来源的告警串成攻击链 | `docs/GRAPH.md` |
+| 联动处置 | 封禁真正下发到 Kong、APISIX、Nginx、Webhook、阿里云 WAF（实验性），带护栏、到期自动解封、全程审计 | `docs/SOAR.md` |
+| 工单闭环 | 高危告警自动开单，SLA 计时，处置须由另一人复核，结果同步回告警 | `docs/WORK_ORDERS.md` |
+| 合规报告 | 等保三级 / 金融行业自查，用运行状态逐项判定，可导出 HTML / CSV | `docs/COMPLIANCE_REPORT.md` |
+| 账号与审计 | 三权分立、口令与会话策略、SM3 哈希链审计日志 | `docs/COMPLIANCE_GAP_ANALYSIS.md` |
+
+### 还没做到的（请在评估前了解）
+
+- **Flink 流处理链路没有做过端到端验证。** 代码和部署文件齐全，但没有在真实的 Kafka / Flink / ClickHouse 环境跑通过，也没有做 10 万 QPS 压测（开发环境没有 Docker）。
+- **检出率没有线上数据。** 各检测引擎的检出率指标只有单元测试和合成数据的测量。
+- **阿里云 WAF 联动是实验性的**，请求签名有测试，但没有在真实 WAF 实例上验证过规则字段。
+- **未实现**：双因素认证、SM2/SM4/国密 TLS、审计对接 SIEM、数据分级（JR/T 0197）、限流处置、多租户、LLM 告警摘要、信创数据库适配。
+- eBPF 采集器不采集 TLS 握手，JA3 指纹需网关经请求头传入。
+
+不符合等保三级的项目，合规报告里会逐项列出。
+
 ## 项目演进路线图
 
 | 阶段 | 时间 | 目标 |
@@ -80,8 +103,8 @@
 离线安装包 `flowlens-poc-<版本>-<架构>.tar.gz` 内含全部镜像，服务器不需要连接互联网：
 
 ```bash
-tar -xzf flowlens-poc-0.7.2-amd64.tar.gz
-cd flowlens-poc-0.7.2-amd64
+tar -xzf flowlens-poc-1.0.0-amd64.tar.gz
+cd flowlens-poc-1.0.0-amd64
 ./install.sh --demo            # 附带演示流量；正式试用加 --https --with-agent
 ```
 
@@ -176,15 +199,15 @@ export FLOWLENS_AGENT_TOKEN=$(openssl rand -hex 32)
 
 ```
 fuchen-flowlens/
+├── platform/               # 平台后端 (Go)：接入、检测引擎、图谱、联动处置、工单、合规报告、IAM 与审计
+│   └── internal/           #   engine/ graph/ soar/ ml/ compliance/ service/ iam/ audit/ storage/ stream/ ...
+├── agent/                  # 流量采集 Agent
+├── pkg/  shared/           # 公共库（脱敏、敏感数据识别、日志、版本）与事件模型
+├── contracts/              # OpenAPI、protobuf、数据库 DDL
+├── web/                    # 前端控制台 (React + TypeScript + D3)
+├── deploy/                 # Docker POC 部署、Flink 作业、ClickHouse 表结构
 ├── docs/                   # 项目文档
-├── collector/              # 流量采集模块 (The Brushes)
-├── conduit/                # 数据管道模块 (The Conduit)
-├── engine/                 # 分析引擎模块 (The Lens Engine)
-├── api/                    # 对外 API 服务
-├── web/                    # 前端控制台
-├── deploy/poc/             # Docker POC 部署：compose、安装与运维脚本
-├── scripts/                # 工具脚本
-└── tests/                  # 测试用例
+└── scripts/                # 工具脚本
 ```
 
 ## 贡献指南
