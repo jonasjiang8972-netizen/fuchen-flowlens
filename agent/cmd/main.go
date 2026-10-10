@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -100,18 +101,28 @@ func main() {
 	go processEvents(ctx, coll, norm, redact.New(cfg.Management.AuthToken), monitor, mgrClient, cfg.Agent.ID, cfg.Kafka.BatchSize, time.Duration(cfg.Kafka.FlushIntervalMs)*time.Millisecond)
 
 	hostname, _ := os.Hostname()
-	go func() {
-		mgrClient.Register(ctx, &mgmt.AgentRegistration{
-			AgentID:      cfg.Agent.ID,
-			Hostname:     hostname,
-			CollectMode:  string(collectMode),
-			Cluster:      cfg.Agent.Cluster,
-			AgentVersion: version.AgentVersion,
-			OS:           env.OS,
-		})
-	}()
-
-	go mgrClient.StartHeartbeatLoop(ctx, cfg.Management, func() mgmt.HeartbeatPayload {
+	reg := &mgmt.AgentRegistration{
+		AgentID:      cfg.Agent.ID,
+		Hostname:     hostname,
+		CollectMode:  string(collectMode),
+		Cluster:      cfg.Agent.Cluster,
+		AgentVersion: version.AgentVersion,
+		OS:           env.OS,
+		Arch:         runtime.GOARCH,
+		Config: &mgmt.RuntimeConfig{
+			Mode:           string(collectMode),
+			FilterPorts:    cfg.Collector.FilterPorts,
+			CaptureHeaders: cfg.Collector.CaptureHeaders,
+			CaptureBody:    cfg.Collector.CaptureBody,
+			MaxBodySizeKB:  cfg.Collector.MaxBodySizeKB,
+		},
+	}
+	if collectMode == detector.ModeGatewayLog {
+		reg.Config.GatewayLogPath = cfg.Collector.GWLog.Path
+		reg.Config.GatewayLogFormat = cfg.Collector.GWLog.Format
+		reg.Config.FilterPorts = nil
+	}
+	go mgrClient.StartHeartbeatLoop(ctx, cfg.Management, reg, func() mgmt.HeartbeatPayload {
 		met := monitor.GetMetrics()
 		return mgmt.HeartbeatPayload{
 			Status:      monitor.GetStatus(),
@@ -126,17 +137,17 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
+		stats := coll.Stats()
+		monitor.Observe(stats.EventsTotal, stats.DroppedTotal, time.Now())
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case now := <-ticker.C:
 				stats := coll.Stats()
 				log.Debugf("Collector stats: events=%d, dropped=%d, errors=%d",
 					stats.EventsTotal, stats.DroppedTotal, stats.ErrorsTotal)
-				monitor.UpdateMetrics(func(m *health.Metrics) {
-					m.QPS = float64(stats.EventsTotal) / 10
-				})
+				monitor.Observe(stats.EventsTotal, stats.DroppedTotal, now)
 			}
 		}
 	}()

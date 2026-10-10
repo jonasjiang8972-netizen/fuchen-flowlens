@@ -29,12 +29,24 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
 
   if (!agent) return <div style={{ color: '#F0F4F8' }}>加载中...</div>
 
+  // Heartbeat sample times (every ~10 s) label the trend charts.
+  const sampleLabels: string[] = (detail?.metrics?.sample_times || []).map((t: string) =>
+    new Date(t).toLocaleTimeString('zh-CN', { hour12: false }))
+  const hasSamples = sampleLabels.length > 0
+  const uptime = (() => {
+    const sec = detail?.metrics?.uptime_seconds || 0
+    if (!sec) return '-'
+    const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60)
+    return d ? `${d} 天 ${h} 小时` : h ? `${h} 小时 ${m} 分钟` : `${m} 分钟`
+  })()
+  const emptyChart = <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94A3B8' }}>暂无心跳数据（采集器每 10 秒上报一次）</div>
+
   const qpsOption = {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis' },
     xAxis: {
       type: 'category',
-      data: ['-7h', '-6h', '-5h', '-4h', '-3h', '-2h', '-1h', 'now'],
+      data: sampleLabels,
       axisLine: { lineStyle: { color: '#1E3A5F' } },
       axisLabel: { color: '#94A3B8', fontSize: 10 },
     },
@@ -59,7 +71,7 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
     tooltip: { trigger: 'axis' },
     xAxis: {
       type: 'category',
-      data: ['-7h', '-6h', '-5h', '-4h', '-3h', '-2h', '-1h', 'now'],
+      data: sampleLabels,
       axisLine: { lineStyle: { color: '#1E3A5F' } },
       axisLabel: { color: '#94A3B8', fontSize: 10 },
     },
@@ -115,13 +127,13 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
               <Descriptions.Item label="集群">{agent.cluster}</Descriptions.Item>
               <Descriptions.Item label="版本">{agent.agent_version}</Descriptions.Item>
               <Descriptions.Item label="操作系统">{agent.os}</Descriptions.Item>
-              <Descriptions.Item label="CPU">{agent.cpu_percent}%</Descriptions.Item>
+              <Descriptions.Item label="CPU">{Number(agent.cpu_percent || 0).toFixed(1)}%</Descriptions.Item>
               <Descriptions.Item label="内存">{agent.memory_mb_used} MB</Descriptions.Item>
-              <Descriptions.Item label="丢包率">{(agent.drop_rate * 100).toFixed(2)}%</Descriptions.Item>
-              <Descriptions.Item label="QPS">{agent.qps.toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label="丢弃率">{((agent.drop_rate || 0) * 100).toFixed(2)}%</Descriptions.Item>
+              <Descriptions.Item label="QPS">{Number(agent.qps || 0).toLocaleString(undefined, { maximumFractionDigits: 1 })}</Descriptions.Item>
+              <Descriptions.Item label="运行时长">{uptime}</Descriptions.Item>
               <Descriptions.Item label="最后心跳">{new Date(agent.last_heartbeat).toLocaleString('zh-CN')}</Descriptions.Item>
-              <Descriptions.Item label="云厂商">{agent.cloud_provider}</Descriptions.Item>
-              <Descriptions.Item label="区域">{agent.region}</Descriptions.Item>
+              <Descriptions.Item label="架构">{agent.arch || '-'}</Descriptions.Item>
               <Descriptions.Item label="采集API数">{detail?.collected_apis || '-'}</Descriptions.Item>
             </Descriptions>
           </Card>
@@ -131,32 +143,39 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col span={12}>
           <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>QPS 趋势</span>}>
-            <ReactECharts option={qpsOption} style={{ height: '200px' }} />
+            {hasSamples ? <ReactECharts option={qpsOption} style={{ height: '200px' }} /> : emptyChart}
           </Card>
         </Col>
         <Col span={12}>
           <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>CPU 使用率</span>}>
-            <ReactECharts option={cpuOption} style={{ height: '200px' }} />
+            {hasSamples ? <ReactECharts option={cpuOption} style={{ height: '200px' }} /> : emptyChart}
           </Card>
         </Col>
       </Row>
 
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col span={12}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>运行配置</span>}>
+          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>运行配置（采集器注册时上报）</span>}>
             <Descriptions bordered column={1} size="small" labelStyle={{ color: '#94A3B8' }} contentStyle={{ color: '#F0F4F8' }}>
-              <Descriptions.Item label="采集模式">{detail?.config?.mode}</Descriptions.Item>
-              <Descriptions.Item label="过滤端口">{detail?.config?.filter_ports?.join(', ') || '-'}</Descriptions.Item>
+              <Descriptions.Item label="采集模式">{detail?.config?.mode || '-'}</Descriptions.Item>
+              {detail?.config?.gateway_log_path ? (
+                <>
+                  <Descriptions.Item label="网关日志">{detail.config.gateway_log_path}</Descriptions.Item>
+                  <Descriptions.Item label="日志格式">{detail.config.gateway_log_format || 'json'}</Descriptions.Item>
+                </>
+              ) : (
+                <Descriptions.Item label="过滤端口">{detail?.config?.filter_ports?.join(', ') || '-'}</Descriptions.Item>
+              )}
               <Descriptions.Item label="捕获请求头">{detail?.config?.capture_headers ? '是' : '否'}</Descriptions.Item>
               <Descriptions.Item label="捕获Body">{detail?.config?.capture_body ? '是' : '否'}</Descriptions.Item>
-              <Descriptions.Item label="最大Body">{detail?.config?.max_body_size_kb || '-'} KB</Descriptions.Item>
-              <Descriptions.Item label="Kafka Topic">{detail?.config?.kafka_topic || '-'}</Descriptions.Item>
+              <Descriptions.Item label="最大Body">{detail?.config?.max_body_size_kb ? `${detail.config.max_body_size_kb} KB` : '-'}</Descriptions.Item>
             </Descriptions>
           </Card>
         </Col>
         <Col span={12}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>最近日志</span>}>
-            <Table columns={logColumns} dataSource={detail?.recent_logs || []} rowKey={(_: any, i?: number) => `${i ?? 0}`} pagination={false} size="small" />
+          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>运行事件（平台记录）</span>}>
+            <Table columns={logColumns} dataSource={detail?.recent_logs || []} rowKey={(_: any, i?: number) => `${i ?? 0}`} pagination={false} size="small"
+              locale={{ emptyText: '平台重启后暂无事件' }} />
           </Card>
         </Col>
       </Row>

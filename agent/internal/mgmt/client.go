@@ -20,14 +20,26 @@ import (
 const AgentTokenHeader = "X-Agent-Token"
 
 type AgentRegistration struct {
-	AgentID      string  `json:"agent_id"`
-	Hostname     string  `json:"hostname"`
-	CollectMode  string  `json:"collect_mode"`
-	Cluster      string  `json:"cluster"`
-	AgentVersion string  `json:"agent_version"`
-	OS           string  `json:"os"`
-	CPUPercent   float64 `json:"cpu_percent"`
-	MemoryMB     uint64  `json:"memory_mb_used"`
+	AgentID      string         `json:"agent_id"`
+	Hostname     string         `json:"hostname"`
+	CollectMode  string         `json:"collect_mode"`
+	Cluster      string         `json:"cluster"`
+	AgentVersion string         `json:"agent_version"`
+	OS           string         `json:"os"`
+	Arch         string         `json:"arch"`
+	Config       *RuntimeConfig `json:"config,omitempty"`
+}
+
+// RuntimeConfig is the collection configuration the agent runs with,
+// reported at registration so the console shows what is actually in use.
+type RuntimeConfig struct {
+	Mode             string   `json:"mode"`
+	FilterPorts      []string `json:"filter_ports,omitempty"`
+	CaptureHeaders   bool     `json:"capture_headers"`
+	CaptureBody      bool     `json:"capture_body"`
+	MaxBodySizeKB    int      `json:"max_body_size_kb"`
+	GatewayLogPath   string   `json:"gateway_log_path,omitempty"`
+	GatewayLogFormat string   `json:"gateway_log_format,omitempty"`
 }
 
 type HeartbeatPayload struct {
@@ -180,22 +192,52 @@ func (c *Client) post(ctx context.Context, url string, body []byte) (*http.Respo
 	return c.httpClient.Do(req)
 }
 
-func (c *Client) StartHeartbeatLoop(ctx context.Context, cfg config.ManagementConfig, getMetrics func() HeartbeatPayload) {
-	ticker := time.NewTicker(cfg.HeartbeatInterval)
-	defer ticker.Stop()
+// minHeartbeatInterval guards against intervals written without a unit
+// ("10" parses as 10ns).
+var minHeartbeatInterval = time.Second
 
+// StartHeartbeatLoop registers the agent and then sends a heartbeat every
+// interval. Registration is retried on every tick until it succeeds, and
+// repeated whenever the platform no longer knows the agent (heartbeat 404),
+// so an agent started before the platform, or kept across a platform
+// reset, still appears. It runs until ctx ends.
+func (c *Client) StartHeartbeatLoop(ctx context.Context, cfg config.ManagementConfig, reg *AgentRegistration, getMetrics func() HeartbeatPayload) {
+	interval := cfg.HeartbeatInterval
+	if interval < minHeartbeatInterval {
+		interval = 10 * time.Second
+	}
+	failures := 0
+	register := func() {
+		if err := c.Register(ctx, reg); err != nil {
+			// Log the first failure, then every tenth, to keep logs readable
+			// while the platform is down.
+			if failures%10 == 0 {
+				logger.L().Warnf("Registration with platform failed (attempt %d), retrying every %s: %v", failures+1, interval, err)
+			}
+			failures++
+			return
+		}
+		failures = 0
+	}
+	register()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			if !c.registered {
+				register()
+				if !c.registered {
+					continue
+				}
+			}
 			hb := getMetrics()
 			hb.AgentID = c.agentID
 			if err := c.SendHeartbeat(ctx, &hb); err != nil {
 				logger.L().Warnf("Heartbeat failed: %v", err)
-				if !c.registered {
-					logger.L().Warnf("Agent not registered, will retry registration")
-				}
 			}
 		}
 	}

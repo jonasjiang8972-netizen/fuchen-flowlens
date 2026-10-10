@@ -144,16 +144,19 @@ func (s *PlatformServer) RegisterAgentHandler(c *gin.Context) {
 		Hostname     string  `json:"hostname"`
 		CollectMode  string  `json:"collect_mode"`
 		Cluster      string  `json:"cluster"`
-		AgentVersion string  `json:"agent_version"`
-		OS           string  `json:"os"`
-		CPUPercent   float64 `json:"cpu_percent"`
-		MemoryMB     uint64  `json:"memory_mb"`
+		AgentVersion string               `json:"agent_version"`
+		OS           string               `json:"os"`
+		Arch         string               `json:"arch"`
+		Config       *service.AgentConfig `json:"config"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "invalid request"})
 		return
 	}
-	id, err := s.agentService.RegisterWithID(req.AgentID, req.Hostname, req.CollectMode, req.Cluster, req.AgentVersion, req.OS)
+	id, err := s.agentService.RegisterAgent(service.Registration{
+		ID: req.AgentID, Hostname: req.Hostname, CollectMode: req.CollectMode, Cluster: req.Cluster,
+		Version: req.AgentVersion, OS: req.OS, Arch: req.Arch, Config: req.Config,
+	})
 	if err != nil {
 		logger.L().Errorf("agent register: %v", err)
 		c.JSON(500, gin.H{"error": "保存采集器注册信息失败"})
@@ -177,7 +180,15 @@ func (s *PlatformServer) HeartbeatHandler(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid request"})
 		return
 	}
-	s.agentService.UpdateHeartbeat(id)
+	err := s.agentService.Heartbeat(id, service.HeartbeatReport{
+		Status: req.Status, QPS: req.QPS, CPUPercent: req.CPUPercent,
+		MemoryMB: req.MemoryMB, DropRate: req.DropRate, CollectMode: req.CollectMode,
+	})
+	if errors.Is(err, service.ErrNotFound) {
+		// The collector registers again on 404.
+		c.JSON(404, gin.H{"error": "采集器未注册"})
+		return
+	}
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
@@ -386,7 +397,7 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 	s.raise(d, req, principal.Confidence)
 
 	if evt.AgentID != "" {
-		s.agentService.UpdateHeartbeat(evt.AgentID)
+		s.agentService.SeenTraffic(evt.AgentID, evt.Application.Method+" "+evt.Application.PathNormalized)
 	}
 }
 

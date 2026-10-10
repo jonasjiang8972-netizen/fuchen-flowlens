@@ -28,7 +28,7 @@ async function write<T>(fn: () => Promise<T>, demoResult: T): Promise<T> {
 export const agentService = {
   list: () => read(async () => (await request<{ items: any[] }>('/admin/agents')).items, generateMockAgents, []),
   detail: (id: string) => read(() => request<any>(`/admin/agents/${id}`), () => mockAgentDetail(id), {
-    agent_id: id, metrics: { qps_history: [], drop_rate_history: [], cpu_history: [], memory_history: [] }, config: {}, recent_logs: [], collected_apis: 0,
+    agent_id: id, metrics: { sample_times: [], qps_history: [], drop_rate_history: [], cpu_history: [], memory_history: [] }, config: {}, recent_logs: [], collected_apis: 0,
   }),
 }
 
@@ -94,21 +94,22 @@ export const ruleService = {
     write(() => request<any>(`/rules/${id}`, { method: 'PUT', body: JSON.stringify(body) }), { status: 'ok' }),
 }
 
+// Static demo build only: sample heartbeat history, one sample every 10 s.
 function mockAgentDetail(id: string) {
-  const metrics: Record<string, any> = {
-    'agent-prod-k8s-01': {
-      qps_history: [14200, 14500, 14800, 15000, 15230, 15100, 14900, 15230],
+  const qps = [14200, 14500, 14800, 15000, 15230, 15100, 14900, 15230]
+  const now = Date.now()
+  return {
+    agent_id: id,
+    metrics: {
+      sample_times: qps.map((_, i) => new Date(now - (qps.length - 1 - i) * 10000).toISOString()),
+      qps_history: qps,
       drop_rate_history: [0.001, 0.001, 0.002, 0.001, 0.001, 0.001, 0.002, 0.001],
       cpu_history: [11.2, 12.0, 13.5, 12.8, 12.3, 11.9, 12.1, 12.3],
       memory_history: [480, 490, 505, 510, 512, 508, 510, 512],
-      kafka_lag: 0, bytes_processed: 1847293447, packets_processed: 892340123, uptime_seconds: 259200,
+      uptime_seconds: 259200,
     },
-  }
-  return {
-    agent_id: id,
-    metrics: metrics[id] || { qps_history: [0], drop_rate_history: [0], cpu_history: [0], memory_history: [0] },
-    config: { mode: 'auto' },
-    recent_logs: [],
+    config: { mode: 'gateway_log', gateway_log_path: '/var/log/gateway/access.log', gateway_log_format: 'json', capture_headers: true, capture_body: true, max_body_size_kb: 64 },
+    recent_logs: [{ level: 'info', message: '采集器注册：主机 demo-host，模式 gateway_log，版本 0.7.0', timestamp: new Date(now - 259200000).toISOString() }],
     collected_apis: 30,
   }
 }

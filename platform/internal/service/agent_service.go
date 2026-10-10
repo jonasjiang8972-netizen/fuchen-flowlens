@@ -28,6 +28,9 @@ type Agent struct {
 	ServiceName   string    `json:"service_name"`
 	CloudProvider string    `json:"cloud_provider"`
 	Region        string    `json:"region"`
+	// RegisteredAt is when the collector last registered (its start-up).
+	RegisteredAt time.Time    `json:"registered_at,omitempty"`
+	Config       *AgentConfig `json:"config,omitempty"`
 }
 
 type AgentDetail struct {
@@ -38,26 +41,58 @@ type AgentDetail struct {
 	CollectedAPIs int           `json:"collected_apis"`
 }
 
+// AgentMetrics are the collector's recent heartbeat samples, oldest first.
 type AgentMetrics struct {
-	QPSHistory       []float64 `json:"qps_history"`
-	DropRateHistory  []float64 `json:"drop_rate_history"`
-	CPUHistory       []float64 `json:"cpu_history"`
-	MemoryHistory    []uint64  `json:"memory_history"`
-	KafkaLag         int64     `json:"kafka_lag"`
-	BytesProcessed   uint64    `json:"bytes_processed"`
-	PacketsProcessed uint64    `json:"packets_processed"`
-	UptimeSeconds    int64     `json:"uptime_seconds"`
+	SampleTimes     []time.Time `json:"sample_times"`
+	QPSHistory      []float64   `json:"qps_history"`
+	DropRateHistory []float64   `json:"drop_rate_history"`
+	CPUHistory      []float64   `json:"cpu_history"`
+	MemoryHistory   []uint64    `json:"memory_history"`
+	UptimeSeconds   int64       `json:"uptime_seconds"`
 }
 
+// AgentConfig is the collection configuration a collector reported at
+// registration.
 type AgentConfig struct {
-	Mode           string   `json:"mode"`
-	FilterPorts    []string `json:"filter_ports"`
-	CaptureHeaders bool     `json:"capture_headers"`
-	CaptureBody    bool     `json:"capture_body"`
-	MaxBodySizeKB  int      `json:"max_body_size_kb"`
-	KafkaBrokers   []string `json:"kafka_brokers"`
-	KafkaTopic     string   `json:"kafka_topic"`
+	Mode             string   `json:"mode"`
+	FilterPorts      []string `json:"filter_ports,omitempty"`
+	CaptureHeaders   bool     `json:"capture_headers"`
+	CaptureBody      bool     `json:"capture_body"`
+	MaxBodySizeKB    int      `json:"max_body_size_kb"`
+	GatewayLogPath   string   `json:"gateway_log_path,omitempty"`
+	GatewayLogFormat string   `json:"gateway_log_format,omitempty"`
 }
+
+// Registration is what a collector reports when it starts.
+type Registration struct {
+	ID, Hostname, CollectMode, Cluster, Version, OS, Arch string
+	Config                                                *AgentConfig
+}
+
+// HeartbeatReport is what a collector reports with each heartbeat.
+type HeartbeatReport struct {
+	Status      string
+	QPS         float64
+	CPUPercent  float64
+	MemoryMB    uint64
+	DropRate    float64
+	CollectMode string
+}
+
+type heartbeatSample struct {
+	At       time.Time
+	QPS      float64
+	CPU      float64
+	MemoryMB uint64
+	DropRate float64
+}
+
+// Bounds of the per-collector in-memory history.
+const (
+	maxHeartbeatSamples = 60
+	maxAgentLogs        = 50
+	maxAgentEndpoints   = 50000
+)
 
 type LogEntry struct {
 	Level     string    `json:"level"`
@@ -70,6 +105,12 @@ type AgentService struct {
 	agents map[string]*Agent
 	p      *persister
 	now    func() time.Time
+
+	// Recent heartbeats, observed events and endpoints per collector. Kept
+	// in memory only: they describe the running collector, not records.
+	samples   map[string][]heartbeatSample
+	logs      map[string][]LogEntry
+	endpoints map[string]map[string]struct{}
 }
 
 // Heartbeat age thresholds for the collector status shown to operators.
@@ -97,11 +138,19 @@ func (s *AgentService) effective(a *Agent) Agent {
 	return c
 }
 
-func NewAgentService() *AgentService {
-	s := &AgentService{
-		agents: make(map[string]*Agent),
-		now:    time.Now,
+func newAgentService(p *persister) *AgentService {
+	return &AgentService{
+		agents:    make(map[string]*Agent),
+		p:         p,
+		now:       time.Now,
+		samples:   make(map[string][]heartbeatSample),
+		logs:      make(map[string][]LogEntry),
+		endpoints: make(map[string]map[string]struct{}),
 	}
+}
+
+func NewAgentService() *AgentService {
+	s := newAgentService(nil)
 	s.seedAgents()
 	return s
 }
@@ -109,7 +158,7 @@ func NewAgentService() *AgentService {
 // NewAgentServiceFrom loads collectors from repo. Sample collectors are
 // added only when seedDemo is set and the repository is empty.
 func NewAgentServiceFrom(ctx context.Context, repo Repository, seedDemo bool) (*AgentService, error) {
-	s := &AgentService{agents: make(map[string]*Agent), p: newPersister(repo, KindAgent), now: time.Now}
+	s := newAgentService(newPersister(repo, KindAgent))
 	docs, err := repo.LoadDocuments(ctx, KindAgent)
 	if err != nil {
 		return nil, fmt.Errorf("load agents: %w", err)
@@ -255,122 +304,72 @@ func (s *AgentService) GetDetail(id string) (*AgentDetail, error) {
 	if !ok {
 		return nil, fmt.Errorf("agent %s: %w", id, ErrNotFound)
 	}
+	m := &AgentMetrics{
+		SampleTimes: []time.Time{}, QPSHistory: []float64{}, DropRateHistory: []float64{},
+		CPUHistory: []float64{}, MemoryHistory: []uint64{},
+	}
+	for _, smp := range s.samples[id] {
+		m.SampleTimes = append(m.SampleTimes, smp.At)
+		m.QPSHistory = append(m.QPSHistory, smp.QPS)
+		m.DropRateHistory = append(m.DropRateHistory, smp.DropRate)
+		m.CPUHistory = append(m.CPUHistory, smp.CPU)
+		m.MemoryHistory = append(m.MemoryHistory, smp.MemoryMB)
+	}
+	if !a.RegisteredAt.IsZero() {
+		m.UptimeSeconds = int64(s.now().Sub(a.RegisteredAt).Seconds())
+	}
+	cfg := a.Config
+	if cfg == nil {
+		cfg = &AgentConfig{Mode: a.CollectMode}
+	}
+	logs := make([]LogEntry, len(s.logs[id]))
+	for i, l := range s.logs[id] { // newest first
+		logs[len(logs)-1-i] = l
+	}
 	return &AgentDetail{
 		Agent:         s.effective(a),
-		Metrics:       s.getAgentMetrics(id),
-		Config:        s.getAgentConfig(id),
-		RecentLogs:    s.getAgentLogs(id),
-		CollectedAPIs: s.getCollectedAPIs(id),
+		Metrics:       m,
+		Config:        cfg,
+		RecentLogs:    logs,
+		CollectedAPIs: len(s.endpoints[id]),
 	}, nil
 }
 
-func (s *AgentService) getAgentMetrics(id string) *AgentMetrics {
-	metrics := map[string]*AgentMetrics{
-		"agent-prod-k8s-01": {
-			QPSHistory:      []float64{14200, 14500, 14800, 15000, 15230, 15100, 14900, 15230},
-			DropRateHistory: []float64{0.001, 0.001, 0.002, 0.001, 0.001, 0.001, 0.002, 0.001},
-			CPUHistory:      []float64{11.2, 12.0, 13.5, 12.8, 12.3, 11.9, 12.1, 12.3},
-			MemoryHistory:   []uint64{480, 490, 505, 510, 512, 508, 510, 512},
-			KafkaLag:        0, BytesProcessed: 1847293447, PacketsProcessed: 892340123,
-			UptimeSeconds: 86400 * 3,
-		},
-		"agent-bj-backup": {
-			QPSHistory:      []float64{21000, 21500, 22000, 22500, 22300, 23000, 23500, 22300},
-			DropRateHistory: []float64{0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.05, 0.05},
-			CPUHistory:      []float64{25.0, 30.0, 35.0, 40.0, 45.2, 48.0, 46.0, 45.2},
-			MemoryHistory:   []uint64{1024, 1200, 1500, 1800, 2048, 2100, 2080, 2048},
-			KafkaLag:        12500, BytesProcessed: 923847291, PacketsProcessed: 423456789,
-			UptimeSeconds: 86400 * 7,
-		},
+// logLocked records an event the platform observed about collector id.
+func (s *AgentService) logLocked(id, level, msg string) {
+	l := append(s.logs[id], LogEntry{Level: level, Message: msg, Timestamp: s.now()})
+	if len(l) > maxAgentLogs {
+		l = append([]LogEntry(nil), l[len(l)-maxAgentLogs:]...)
 	}
-	if m, ok := metrics[id]; ok {
-		return m
-	}
-	return &AgentMetrics{
-		QPSHistory: []float64{0}, DropRateHistory: []float64{0},
-		CPUHistory: []float64{0}, MemoryHistory: []uint64{0},
-	}
-}
-
-func (s *AgentService) getAgentConfig(id string) *AgentConfig {
-	configs := map[string]*AgentConfig{
-		"agent-prod-k8s-01": {
-			Mode: "ebpf", FilterPorts: []string{"80", "443", "8080", "8443"},
-			CaptureHeaders: true, CaptureBody: true, MaxBodySizeKB: 64,
-			KafkaBrokers: []string{"kafka-1:9092", "kafka-2:9092"},
-			KafkaTopic:   "raw-api-events",
-		},
-		"agent-bj-backup": {
-			Mode: "gateway_log", FilterPorts: []string{},
-			CaptureHeaders: true, CaptureBody: true, MaxBodySizeKB: 128,
-			KafkaBrokers: []string{"kafka-1:9092"},
-			KafkaTopic:   "raw-api-events",
-		},
-	}
-	if c, ok := configs[id]; ok {
-		return c
-	}
-	return &AgentConfig{Mode: "auto"}
-}
-
-func (s *AgentService) getAgentLogs(id string) []LogEntry {
-	now := time.Now()
-	logs := map[string][]LogEntry{
-		"agent-prod-k8s-01": {
-			{Level: "info", Message: "Agent started successfully in ebpf mode", Timestamp: now.Add(-30 * time.Minute)},
-			{Level: "info", Message: "Connected to Kafka cluster", Timestamp: now.Add(-30 * time.Minute)},
-			{Level: "info", Message: "eBPF programs loaded: 3", Timestamp: now.Add(-29 * time.Minute)},
-			{Level: "info", Message: "Path normalization model initialized", Timestamp: now.Add(-29 * time.Minute)},
-			{Level: "debug", Message: "Processed 10000 events in last second", Timestamp: now.Add(-5 * time.Minute)},
-		},
-		"agent-bj-backup": {
-			{Level: "info", Message: "Agent started in gateway_log mode", Timestamp: now.Add(-60 * time.Minute)},
-			{Level: "warn", Message: "Kafka produce latency > 500ms", Timestamp: now.Add(-45 * time.Minute)},
-			{Level: "warn", Message: "Drop rate exceeded 1%", Timestamp: now.Add(-40 * time.Minute)},
-			{Level: "error", Message: "Kafka broker connection timeout, retrying...", Timestamp: now.Add(-35 * time.Minute)},
-			{Level: "warn", Message: "Memory usage > 80%", Timestamp: now.Add(-20 * time.Minute)},
-		},
-	}
-	if l, ok := logs[id]; ok {
-		return l
-	}
-	return []LogEntry{}
-}
-
-func (s *AgentService) getCollectedAPIs(id string) int {
-	counts := map[string]int{
-		"agent-prod-k8s-01":  45,
-		"agent-prod-k8s-02":  38,
-		"agent-prod-k8s-03":  22,
-		"agent-staging-01":   120,
-		"agent-vm-dmz-01":    156,
-		"agent-vm-dmz-02":    143,
-		"agent-bj-backup":    89,
-		"agent-saas-tencent": 67,
-	}
-	if c, ok := counts[id]; ok {
-		return c
-	}
-	return 0
+	s.logs[id] = l
 }
 
 func (s *AgentService) Register(hostname, mode, cluster string) (string, error) {
 	return s.RegisterWithID("", hostname, mode, cluster, "", "")
 }
 
-// RegisterWithID registers (or re-registers) a collector and saves it; if
-// saving fails the previous state is restored and the error returned.
+// RegisterWithID registers a collector from its basic identification.
 func (s *AgentService) RegisterWithID(preferredID, hostname, mode, cluster, agentVersion, osName string) (string, error) {
+	return s.RegisterAgent(Registration{ID: preferredID, Hostname: hostname, CollectMode: mode,
+		Cluster: cluster, Version: agentVersion, OS: osName})
+}
+
+// RegisterAgent registers (or re-registers, after a collector restart) a
+// collector and saves it; if saving fails the previous state is restored
+// and the error returned.
+func (s *AgentService) RegisterAgent(reg Registration) (string, error) {
 	s.mu.Lock()
-	id := fmt.Sprintf("agent-%s-%d", hostname, time.Now().Unix()%10000)
-	if preferredID != "" {
-		id = preferredID
+	id := fmt.Sprintf("agent-%s-%d", reg.Hostname, time.Now().Unix()%10000)
+	if reg.ID != "" {
+		id = reg.ID
 	}
+	now := s.now()
 	prev, existed := s.agents[id]
 	s.agents[id] = &Agent{
-		ID: id, Hostname: hostname, Status: "online",
-		CollectMode: mode, Cluster: cluster,
-		LastHeartbeat: s.now(), AgentVersion: agentVersion, OS: osName,
+		ID: id, Hostname: reg.Hostname, Status: "online",
+		CollectMode: reg.CollectMode, Cluster: reg.Cluster,
+		LastHeartbeat: now, AgentVersion: reg.Version, OS: reg.OS, Arch: reg.Arch,
+		RegisteredAt: now, Config: reg.Config,
 	}
 	s.mu.Unlock()
 
@@ -384,15 +383,93 @@ func (s *AgentService) RegisterWithID(preferredID, hostname, mode, cluster, agen
 		s.mu.Unlock()
 		return "", fmt.Errorf("save agent %s: %w", id, err)
 	}
+
+	s.mu.Lock()
+	delete(s.samples, id)
+	verb := "采集器注册"
+	if existed {
+		verb = "采集器重新注册（采集器重启或平台数据重置）"
+	}
+	s.logLocked(id, "info", fmt.Sprintf("%s：主机 %s，模式 %s，版本 %s", verb, reg.Hostname, reg.CollectMode, reg.Version))
+	s.mu.Unlock()
 	return id, nil
 }
 
+// Heartbeat records a collector's heartbeat and the metrics it reports. It
+// returns ErrNotFound for an unknown collector, which should then register
+// again.
+func (s *AgentService) Heartbeat(id string, r HeartbeatReport) error {
+	s.mu.Lock()
+	a, ok := s.agents[id]
+	if !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("agent %s: %w", id, ErrNotFound)
+	}
+	now := s.now()
+	before := s.effective(a)
+	wasDegraded := a.Status == "degraded"
+
+	a.LastHeartbeat = now
+	a.QPS, a.CPUPercent, a.MemoryMB, a.DropRate = r.QPS, r.CPUPercent, r.MemoryMB, r.DropRate
+	if r.CollectMode != "" {
+		a.CollectMode = r.CollectMode
+	}
+	a.Status = "online"
+	if r.Status == "degraded" {
+		a.Status = "degraded"
+	}
+
+	smp := append(s.samples[id], heartbeatSample{At: now, QPS: r.QPS, CPU: r.CPUPercent, MemoryMB: r.MemoryMB, DropRate: r.DropRate})
+	if len(smp) > maxHeartbeatSamples {
+		smp = append([]heartbeatSample(nil), smp[len(smp)-maxHeartbeatSamples:]...)
+	}
+	s.samples[id] = smp
+
+	switch {
+	case before.Status == "offline":
+		s.logLocked(id, "info", fmt.Sprintf("离线 %s 后恢复心跳", now.Sub(before.LastHeartbeat).Round(time.Second)))
+	case !wasDegraded && a.Status == "degraded":
+		s.logLocked(id, "warn", fmt.Sprintf("采集器报告异常：丢弃率 %.2f%%", r.DropRate*100))
+	case wasDegraded && a.Status == "online":
+		s.logLocked(id, "info", fmt.Sprintf("采集器恢复正常：丢弃率 %.2f%%", r.DropRate*100))
+	}
+	s.mu.Unlock()
+	s.p.markDirty(id)
+	return nil
+}
+
+// UpdateHeartbeat marks a collector alive (traffic from it arrived) without
+// changing the status it reported.
 func (s *AgentService) UpdateHeartbeat(id string) {
 	s.mu.Lock()
 	a, ok := s.agents[id]
 	if ok {
 		a.LastHeartbeat = s.now()
-		a.Status = "online"
+	}
+	s.mu.Unlock()
+	if ok {
+		s.p.markDirty(id)
+	}
+}
+
+// SeenTraffic records that collector id delivered traffic for endpoint:
+// the collector is alive, and the endpoint counts toward its collected
+// APIs. Unknown collectors are ignored.
+func (s *AgentService) SeenTraffic(id, endpoint string) {
+	s.mu.Lock()
+	a, ok := s.agents[id]
+	if ok {
+		a.LastHeartbeat = s.now()
+		if endpoint != "" {
+			set := s.endpoints[id]
+			if set == nil {
+				set = make(map[string]struct{})
+				s.endpoints[id] = set
+			}
+			if len(set) < maxAgentEndpoints {
+				set[endpoint] = struct{}{}
+			}
+		}
 	}
 	s.mu.Unlock()
 	if ok {

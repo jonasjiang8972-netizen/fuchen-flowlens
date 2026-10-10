@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -17,7 +18,18 @@ type Monitor struct {
 	metrics       Metrics
 	lastHeartbeat time.Time
 	handlers      []StatusHandler
+
+	// Previous Observe sample, for per-interval rates.
+	prevAt      time.Time
+	prevEvents  uint64
+	prevDropped uint64
+	prevCPU     uint64
+	procSample  func() (uint64, uint64, error)
 }
+
+// degradedDropRate is the share of dropped events from which the agent
+// reports itself degraded.
+const degradedDropRate = 0.01
 
 type Metrics struct {
 	QPS            float64 `json:"qps"`
@@ -37,8 +49,48 @@ func NewMonitor(agentID string, cfg config.ManagementConfig) *Monitor {
 	return &Monitor{
 		agentID:  agentID,
 		config:   cfg,
-		status:   "initializing",
-		handlers: make([]StatusHandler, 0),
+		status:     "initializing",
+		handlers:   make([]StatusHandler, 0),
+		procSample: procSample,
+	}
+}
+
+// Observe takes the collector's cumulative counters and updates the
+// metrics for the interval since the previous call: QPS and drop rate from
+// the counter deltas, CPU share and resident memory of this process, and
+// the status (degraded while the drop rate is at least 1%, else running).
+func (m *Monitor) Observe(eventsTotal, droppedTotal uint64, now time.Time) {
+	cpuTicks, rss, procErr := m.procSample()
+
+	m.mu.Lock()
+	first := m.prevAt.IsZero()
+	elapsed := now.Sub(m.prevAt).Seconds()
+	if !first && elapsed > 0 && eventsTotal >= m.prevEvents && droppedTotal >= m.prevDropped {
+		events := float64(eventsTotal - m.prevEvents)
+		dropped := float64(droppedTotal - m.prevDropped)
+		m.metrics.QPS = events / elapsed
+		m.metrics.DropRate = 0
+		if events+dropped > 0 {
+			m.metrics.DropRate = dropped / (events + dropped)
+		}
+		if procErr == nil && cpuTicks >= m.prevCPU {
+			m.metrics.CPUPercent = float64(cpuTicks-m.prevCPU) / clockTicks / elapsed * 100
+		}
+	}
+	if procErr == nil {
+		m.metrics.MemoryMB = rss / (1 << 20)
+		m.prevCPU = cpuTicks
+	}
+	m.prevAt, m.prevEvents, m.prevDropped = now, eventsTotal, droppedTotal
+	status := "running"
+	if m.metrics.DropRate >= degradedDropRate {
+		status = "degraded"
+	}
+	changed := status != m.status
+	m.mu.Unlock()
+
+	if changed {
+		m.setStatus(status, fmt.Sprintf("drop rate %.2f%%", m.metrics.DropRate*100))
 	}
 }
 
