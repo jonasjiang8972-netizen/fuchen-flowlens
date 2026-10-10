@@ -222,7 +222,7 @@ func defaultRules() []Rule {
 			ID: "R-BOT-001", RequirementFR: "FR-RISK-002",
 			Name: "爬虫行为检测", Category: "业务风控",
 			Severity: "medium", Enabled: true, DefaultScore: 70,
-			Description:    "同一调用方 1 分钟内请求数达到爆发阈值，或请求间隔高度规律（变异系数低于阈值）时判定为自动化脚本；两者同时出现评 85 分。",
+			Description:    "同一调用方 1 分钟内请求数达到爆发阈值，或请求间隔高度规律（平均间隔在 0.1～10 秒之间且变异系数低于阈值）时判定为自动化脚本，各评 70 分；两者同时出现评 85 分。",
 			Recommendation: "对该调用方实施验证码挑战或限流。",
 			Params: []RuleParam{
 				{Key: "burst_threshold", Label: "爆发阈值", Type: "int", DefaultValue: 120, Min: 10, Max: 100000, Unit: "次/分钟", Description: "1 分钟内请求数达到此值触发"},
@@ -246,7 +246,7 @@ func defaultRules() []Rule {
 			ID: "R-SSRF-001", RequirementFR: "FR-DET-007",
 			Name: "SSRF 服务端请求伪造检测", Category: "注入攻击",
 			Severity: "high", Enabled: true, DefaultScore: 75,
-			Description:    "检测请求参数中指向内网地址（75 分）、危险协议（85 分）或云元数据地址（95 分）的 URL 和 IP。只匹配字面地址，不做域名解析。",
+			Description:    "检测请求参数（URL 参数和 JSON 请求体）中指向内网地址（75 分）、危险协议（85 分）或云元数据地址（95 分）的地址，识别十进制、十六进制等 IP 变形写法。带协议的 URL 检查所有参数；不带协议的 IP 只检查 url、host、target、callback 等表示目标地址的参数。只匹配字面地址，不做域名解析。",
 			Recommendation: "对该接口的用户输入做 URL 白名单校验，禁止访问内网和元数据地址。",
 			Params: []RuleParam{
 				{Key: "internal_nets", Label: "内网地址段", Type: "string", DefaultValue: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,169.254.0.0/16,::1/128,fc00::/7", Description: "逗号分隔的 CIDR，参数指向这些网段时告警"},

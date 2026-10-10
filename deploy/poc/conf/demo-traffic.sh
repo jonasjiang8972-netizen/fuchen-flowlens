@@ -16,8 +16,26 @@ pick() { # pick word...
   echo "$1"
 }
 
-echo "demo-traffic: writing ${RATE} req/s to ${LOG}"
+line() { # line METHOD URI STATUS CLIENT_IP SERVICE
+  printf '{"request":{"method":"%s","uri":"%s","host":"demo.flowlens.local"},"response":{"status":%s},"client_ip":"%s","upstream_addr":"10.30.0.%s:8080","request_length":%s,"bytes_sent":%s,"request_time":0.%03d,"route":{"name":"%s"}}\n' \
+    "$1" "$2" "$3" "$4" "$(( $(rand 8) + 1 ))" "$(( $(rand 900) + 100 ))" "$(( $(rand 20000) + 200 ))" "$(rand 400)" "$5" >> "$LOG"
+}
+
+echo "demo-traffic: writing ${RATE} req/s to ${LOG}, with periodic SSRF probes and brute-force rounds"
+tick=0
 while :; do
+  tick=$((tick + 1))
+  # Attack scenarios so every detection has something to show.
+  if [ $((tick % 30)) -eq 0 ]; then
+    line GET "/api/v1/preview?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F" 200 198.51.100.23 content-svc
+  fi
+  if [ $((tick % 120)) -eq 60 ]; then
+    j=0
+    while [ "$j" -lt 25 ]; do
+      line POST /api/v1/auth/login 401 203.0.113.66 auth-svc
+      j=$((j + 1))
+    done
+  fi
   i=0
   while [ "$i" -lt "$RATE" ]; do
     i=$((i + 1))
@@ -36,8 +54,7 @@ while :; do
       *)           m=GET;    u="/api/v1/products/$(rand 300)"; svc=product-svc ;;
     esac
     st=$(pick 200 200 200 200 200 200 200 201 204 400 401 403 404 500)
-    printf '{"request":{"method":"%s","uri":"%s","host":"demo.flowlens.local"},"response":{"status":%s},"client_ip":"%s","upstream_addr":"10.30.0.%s:8080","request_length":%s,"bytes_sent":%s,"request_time":0.%03d,"route":{"name":"%s"}}\n' \
-      "$m" "$u" "$st" "$ip" "$(( $(rand 8) + 1 ))" "$(( $(rand 900) + 100 ))" "$(( $(rand 20000) + 200 ))" "$(rand 400)" "$svc" >> "$LOG"
+    line "$m" "$u" "$st" "$ip" "$svc"
   done
   # Keep the demo log from growing without bound.
   if [ "$(wc -c < "$LOG")" -gt 104857600 ]; then

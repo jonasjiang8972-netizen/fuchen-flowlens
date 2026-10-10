@@ -1,6 +1,9 @@
 package server
 
 import (
+	"strings"
+	"time"
+
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/service"
 )
@@ -14,6 +17,9 @@ const (
 	ruleAuth = "R-AUTH-001"
 	ruleBFLA = "R-BFLA-001"
 	ruleDLP  = "R-DLP-001"
+	ruleBot  = "R-BOT-001"
+	ruleRate = "R-RATE-001"
+	ruleSSRF = "R-SSRF-001"
 )
 
 // ruleTitles are the titles of alerts raised by each rule.
@@ -22,6 +28,9 @@ var ruleTitles = map[string]string{
 	ruleAuth: "认证失败/撞库风险自动告警",
 	ruleBFLA: "BFLA 越权访问自动告警",
 	ruleDLP:  "敏感数据接口自动告警",
+	ruleBot:  "爬虫行为自动告警",
+	ruleRate: "接口流量突增自动告警",
+	ruleSSRF: "SSRF 服务端请求伪造自动告警",
 }
 
 // detection is the strongest finding for one request.
@@ -29,12 +38,22 @@ type detection struct {
 	RuleID string
 	Score  int
 	Reason string
+	// Subject overrides the account and source IP the alert is filed under
+	// when the finding concerns something else (an endpoint for traffic
+	// surges), so one surge is one alert rather than one per caller.
+	Subject   string
+	SubjectIP string
+	override  bool
 }
 
 // detectInput is one request as seen by the engines.
 type detectInput struct {
 	req       accessDetectionRequest
-	sensitive []string // field names seen in the request or response
+	sensitive []string // sensitive field names the endpoint exposes
+	method    string
+	query     map[string]string
+	body      []byte    // request body
+	at        time.Time // when the request was made; zero means now
 }
 
 // evaluate runs every enabled rule's engine on one request and returns the
@@ -71,6 +90,22 @@ func (s *PlatformServer) evaluate(in detectInput) detection {
 		score, reason := s.dlpEngine.Evaluate(req.Endpoint, req.SourceIP, in.sensitive)
 		consider(ruleDLP, score, reason)
 	}
+	if req.AccountID != "" && s.ruleService.IsEnabled(ruleBot) {
+		score, reason := s.botEngine.Evaluate(req.AccountID, req.SourceIP, in.at)
+		consider(ruleBot, score, reason)
+	}
+	if (len(in.query) > 0 || len(in.body) > 0) && s.ruleService.IsEnabled(ruleSSRF) {
+		score, reason := s.ssrfEngine.Evaluate(req.Endpoint, req.SourceIP, in.query, in.body)
+		consider(ruleSSRF, score, reason)
+	}
+	if req.Endpoint != "" && s.ruleService.IsEnabled(ruleRate) {
+		endpoint := strings.TrimSpace(in.method + " " + req.Endpoint)
+		score, reason, top := s.rateEngine.Evaluate(endpoint, req.SourceIP, in.at)
+		if score > best.Score {
+			best = detection{RuleID: ruleRate, Score: score, Reason: reason,
+				Subject: "endpoint:" + endpoint, SubjectIP: top, override: true}
+		}
+	}
 	return best
 }
 
@@ -96,8 +131,12 @@ func (s *PlatformServer) raise(d detection, req accessDetectionRequest, confiden
 	if title == "" {
 		title = rule.Name
 	}
+	account, ip := req.AccountID, req.SourceIP
+	if d.override {
+		account, ip = d.Subject, d.SubjectIP
+	}
 	alert := s.alertService.CreateDetectionAlert(rule.RequirementFR, severity, title, d.Reason,
-		req.SourceIP, req.AccountID, d.Score, confidence)
+		ip, account, d.Score, confidence)
 	s.ruleService.IncrementHit(d.RuleID)
 	return &alert
 }
@@ -115,6 +154,12 @@ func (s *PlatformServer) engineFor(ruleID string) configurable {
 		return s.bflaEngine
 	case ruleDLP:
 		return s.dlpEngine
+	case ruleBot:
+		return s.botEngine
+	case ruleRate:
+		return s.rateEngine
+	case ruleSSRF:
+		return s.ssrfEngine
 	}
 	return nil
 }

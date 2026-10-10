@@ -20,8 +20,9 @@ func TestIngestRedactsBeforeStoring(t *testing.T) {
 	evt.Content.ResponseBody = []byte(`{"id_card":"110101199003074514","password":"x"}`)
 	srv.processIngestEvent(context.Background(), evt)
 
+	// The platform computes the template itself, whatever the collector sent.
 	for _, a := range srv.assetService.List() {
-		if a.PathNormalized != evt.Application.PathNormalized {
+		if a.PathNormalized != "/api/customers/{id}/cards/{id}" {
 			continue
 		}
 		joined := strings.Join(a.PathRawSamples, " ")
@@ -34,6 +35,33 @@ func TestIngestRedactsBeforeStoring(t *testing.T) {
 		return
 	}
 	t.Fatal("asset not created")
+}
+
+func TestIngestSplitsQueryAndGroupsAssets(t *testing.T) {
+	srv := NewPlatformServer(storage.NewMemStore())
+	before := len(srv.assetService.List())
+	for i, target := range []string{"/api/v1/orders?page=1", "/api/v1/orders?page=2", "/api/v1/users/821", "/api/v1/users/9"} {
+		var evt shared.APIEvent
+		evt.Application.Method = "GET"
+		evt.Application.Host = "shop.example"
+		evt.Application.PathRaw = target
+		evt.Application.PathNormalized = target // an old collector's untouched value
+		evt.EventID = string(rune('a' + i))
+		srv.processIngestEvent(context.Background(), evt)
+	}
+	got := map[string]bool{}
+	for _, a := range srv.assetService.List() {
+		got[a.PathNormalized] = true
+		if strings.Contains(a.PathNormalized, "?") {
+			t.Fatalf("query string kept in asset path %q", a.PathNormalized)
+		}
+	}
+	if !got["/api/v1/orders"] || !got["/api/v1/users/{id}"] {
+		t.Fatalf("assets = %v", got)
+	}
+	if n := len(srv.assetService.List()) - before; n != 2 {
+		t.Fatalf("4 requests to 2 endpoints created %d assets", n)
+	}
 }
 
 func contains(items []string, s string) bool {

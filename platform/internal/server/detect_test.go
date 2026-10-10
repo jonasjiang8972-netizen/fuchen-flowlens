@@ -144,3 +144,31 @@ func TestIngestedExportRaisesDLPAlert(t *testing.T) {
 		t.Fatalf("alerts: %+v", alerts)
 	}
 }
+
+func TestIngestedSSRFQueryRaisesAlert(t *testing.T) {
+	srv := NewPlatformServer(storage.NewMemStore())
+	evt := shared.APIEvent{}
+	evt.Application.Method = "GET"
+	// Query string still on the path, as a gateway log delivers it.
+	evt.Application.PathRaw = "/api/v1/preview?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F"
+	evt.Network.SrcIP = "198.51.100.23"
+	evt.Content.RequestHeaders = map[string]string{"x-user-id": "attacker-1"}
+	srv.processIngestEvent(t.Context(), evt)
+	alerts := alertsFor(srv, "attacker-1")
+	if len(alerts) != 1 || alerts[0].SourceRequirement != "FR-DET-007" || alerts[0].Severity != "critical" {
+		t.Fatalf("alerts: %+v", alerts)
+	}
+}
+
+func TestRateAlertIsFiledPerEndpoint(t *testing.T) {
+	srv := NewPlatformServer(storage.NewMemStore())
+	d := detection{RuleID: ruleRate, Score: 75, Reason: "surge", Subject: "endpoint:GET /api/x", SubjectIP: "203.0.113.1", override: true}
+	for i := 0; i < 3; i++ {
+		req := accessDetectionRequest{AccountID: fmt.Sprintf("caller-%d", i), SourceIP: fmt.Sprintf("10.0.0.%d", i)}
+		srv.raise(d, req, 0.8)
+	}
+	alerts := alertsFor(srv, "endpoint:GET /api/x")
+	if len(alerts) != 1 || alerts[0].OccurrenceCount != 3 || alerts[0].SourceIP != "203.0.113.1" {
+		t.Fatalf("alerts: %+v", alerts)
+	}
+}

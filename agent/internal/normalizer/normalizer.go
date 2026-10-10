@@ -1,157 +1,53 @@
 package normalizer
 
 import (
-	"regexp"
-	"strings"
-	"sync"
 	"time"
 
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/apipath"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/shared"
 )
 
-type Normalizer struct {
-	mu           sync.RWMutex
-	pathPatterns []*pathPattern
-	staticPaths  map[string]string
-}
+// Normalizer fills in derived fields of collected events before they are
+// redacted and sent: query parameters split off the request target, the
+// API template of the path, and defaults for missing fields.
+type Normalizer struct{}
 
-type pathPattern struct {
-	regex         *regexp.Regexp
-	template      string
-	paramNames    []string
-	minConfidence float64
-}
+func New() *Normalizer { return &Normalizer{} }
 
-func New() *Normalizer {
-	n := &Normalizer{
-		staticPaths: make(map[string]string),
-	}
-	n.initPatterns()
-	return n
-}
-
-func (n *Normalizer) initPatterns() {
-	n.pathPatterns = []*pathPattern{
-		{
-			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d+)(/|$)`),
-			template:      "/$1/{id}$3",
-			paramNames:    []string{"id"},
-			minConfidence: 0.8,
-		},
-		{
-			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(/|$)`),
-			template:      "/$1/{uuid}$3",
-			paramNames:    []string{"uuid"},
-			minConfidence: 0.9,
-		},
-		{
-			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d+)/([a-zA-Z0-9_-]+)/(\d+)(/|$)`),
-			template:      "/$1/{id}/$3/{id}$5",
-			paramNames:    []string{"id", "id"},
-			minConfidence: 0.7,
-		},
-		{
-			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/([A-Z]{2,})(/|$)`),
-			template:      "/$1/{enum}$3",
-			paramNames:    []string{"enum"},
-			minConfidence: 0.6,
-		},
-		{
-			regex:         regexp.MustCompile(`^/([a-zA-Z0-9_-]+)/(\d{14,})(/|$)`),
-			template:      "/$1/{timestamp}$3",
-			paramNames:    []string{"timestamp"},
-			minConfidence: 0.7,
-		},
-	}
-}
-
-func (n *Normalizer) NormalizePath(rawPath string) (string, float64) {
-	if rawPath == "" || rawPath == "/" {
-		return rawPath, 1.0
-	}
-
-	n.mu.RLock()
-	if normalized, ok := n.staticPaths[rawPath]; ok {
-		n.mu.RUnlock()
-		return normalized, 1.0
-	}
-	n.mu.RUnlock()
-
-	for _, pattern := range n.pathPatterns {
-		if matches := pattern.regex.FindStringSubmatch(rawPath); matches != nil {
-			result := rawPath
-			for i, name := range pattern.paramNames {
-				if i+1 < len(matches) {
-					result = strings.Replace(result, matches[i+1], "{"+name+"}", 1)
-				}
-			}
-			n.mu.Lock()
-			n.staticPaths[rawPath] = result
-			n.mu.Unlock()
-			return result, pattern.minConfidence
-		}
-	}
-
-	return rawPath, 1.0
+// NormalizePath returns the API template of a path (/users/123 ->
+// /users/{id}).
+func (n *Normalizer) NormalizePath(rawPath string) string {
+	return apipath.Normalize(rawPath)
 }
 
 func (n *Normalizer) NormalizeEvent(evt *shared.APIEvent) *shared.APIEvent {
 	if evt.Application.PathRaw != "" {
-		normalized, confidence := n.NormalizePath(evt.Application.PathRaw)
-		evt.Application.PathNormalized = normalized
-		_ = confidence
+		path, query := apipath.Split(evt.Application.PathRaw)
+		evt.Application.PathRaw = path
+		if len(query) > 0 {
+			if evt.Content.QueryParams == nil {
+				evt.Content.QueryParams = make(map[string]string, len(query))
+			}
+			for k, v := range query {
+				if _, ok := evt.Content.QueryParams[k]; !ok {
+					evt.Content.QueryParams[k] = v
+				}
+			}
+		}
+		evt.Application.PathNormalized = apipath.Normalize(path)
 	}
 
 	if evt.Application.Method == "" {
 		evt.Application.Method = "GET"
 	}
-
 	if evt.Application.ProtocolType == "" {
 		evt.Application.ProtocolType = "REST"
 	}
-
 	if evt.Timestamp.IsZero() {
 		evt.Timestamp = time.Now()
 	}
-
 	if evt.Metadata.Env == "" {
 		evt.Metadata.Env = "prod"
 	}
-
 	return evt
-}
-
-func (n *Normalizer) NormalizeBatch(events []*shared.APIEvent) []*shared.APIEvent {
-	results := make([]*shared.APIEvent, 0, len(events))
-	for _, evt := range events {
-		normalized := n.NormalizeEvent(evt)
-		results = append(results, normalized)
-	}
-	return results
-}
-
-func (n *Normalizer) GetStats() map[string]interface{} {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
-	return map[string]interface{}{
-		"cached_paths":  len(n.staticPaths),
-		"pattern_count": len(n.pathPatterns),
-	}
-}
-
-func (n *Normalizer) AddCustomPattern(regexStr, template string, confidence float64) error {
-	re, err := regexp.Compile(regexStr)
-	if err != nil {
-		return err
-	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.pathPatterns = append(n.pathPatterns, &pathPattern{
-		regex:         re,
-		template:      template,
-		minConfidence: confidence,
-	})
-	logger.L().Infof("Added custom path normalization pattern: %s -> %s", regexStr, template)
-	return nil
 }

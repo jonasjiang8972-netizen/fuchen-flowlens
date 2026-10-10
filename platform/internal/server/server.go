@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/apipath"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/logger"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/redact"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
@@ -34,6 +35,9 @@ type PlatformServer struct {
 	authEngine     *engine.AuthFailureEngine
 	bflaEngine     *engine.BFLAEngine
 	dlpEngine      *engine.DLPEngine
+	botEngine      *engine.BotEngine
+	rateEngine     *engine.RateEngine
+	ssrfEngine     *engine.SSRFEngine
 	ingestPipeline *ingest.Pipeline
 	redactor       *redact.Redactor
 	DemoMode       bool
@@ -98,6 +102,9 @@ func newServer(store storage.Store, agents *service.AgentService, assets *servic
 		authEngine:   engine.NewAuthFailureEngine(store),
 		bflaEngine:   engine.NewBFLAEngine(store),
 		dlpEngine:    engine.NewDLPEngine(store),
+		botEngine:    engine.NewBotEngine(store),
+		rateEngine:   engine.NewRateEngine(store),
+		ssrfEngine:   engine.NewSSRFEngine(store),
 		redactor:     redact.New(""),
 	}
 	srv.applyAllRuleConfigs()
@@ -123,6 +130,8 @@ func (s *PlatformServer) FlushAll(ctx context.Context) error {
 func (s *PlatformServer) StartEngines(ctx context.Context) {
 	go s.bolaEngine.StartCleanup(ctx)
 	go s.authEngine.StartCleanup(ctx)
+	go s.botEngine.StartCleanup(ctx)
+	go s.rateEngine.StartCleanup(ctx)
 	s.ingestPipeline.Start(ctx, 4)
 	logger.L().Info("Detection engines started")
 }
@@ -349,9 +358,11 @@ func (s *PlatformServer) IngestMetricsHandler(c *gin.Context) {
 func (s *PlatformServer) SetRedactionKey(key string) { s.redactor = redact.New(key) }
 
 func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIEvent) {
-	// Safety net: collectors redact before sending, but never rely on it.
-	s.redactor.Event(&evt)
+	// Split the query first so its values are redacted parameter by
+	// parameter. Safety net: collectors redact before sending, but never
+	// rely on it.
 	normalizeIngestEvent(&evt)
+	s.redactor.Event(&evt)
 	principal := resolvePrincipal(evt)
 	sensitiveFields := classifySensitiveFields(evt)
 	s.assetService.ObserveEvent(evt, sensitiveFields)
@@ -364,7 +375,14 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 		SourceIP:  evt.Network.SrcIP,
 		Status:    int(evt.Application.StatusCode),
 	}
-	d := s.evaluate(detectInput{req: req, sensitive: exposedSensitiveFields(evt)})
+	d := s.evaluate(detectInput{
+		req:       req,
+		sensitive: exposedSensitiveFields(evt),
+		method:    evt.Application.Method,
+		query:     evt.Content.QueryParams,
+		body:      evt.Content.RequestBody,
+		at:        evt.Timestamp,
+	})
 	s.raise(d, req, principal.Confidence)
 
 	if evt.AgentID != "" {
@@ -401,9 +419,27 @@ type resolvedPrincipal struct {
 	Evidence   []string
 }
 
+// normalizeIngestEvent splits any query string off the request path into
+// QueryParams and recomputes the API template of the path. The platform's
+// template is authoritative so assets group the same way whatever collector
+// (or collector version) sent the event.
 func normalizeIngestEvent(evt *shared.APIEvent) {
-	if evt.Application.PathNormalized == "" {
-		evt.Application.PathNormalized = normalizePath(evt.Application.PathRaw)
+	path, query := apipath.Split(evt.Application.PathRaw)
+	evt.Application.PathRaw = path
+	if len(query) > 0 {
+		if evt.Content.QueryParams == nil {
+			evt.Content.QueryParams = make(map[string]string, len(query))
+		}
+		for k, v := range query {
+			if _, ok := evt.Content.QueryParams[k]; !ok {
+				evt.Content.QueryParams[k] = v
+			}
+		}
+	}
+	if path != "" {
+		evt.Application.PathNormalized = apipath.Normalize(path)
+	} else {
+		evt.Application.PathNormalized = apipath.Normalize(evt.Application.PathNormalized)
 	}
 	if evt.Application.Method == "" {
 		evt.Application.Method = "GET"
@@ -414,39 +450,6 @@ func normalizeIngestEvent(evt *shared.APIEvent) {
 	if evt.Timestamp.IsZero() {
 		evt.Timestamp = time.Now()
 	}
-}
-
-func normalizePath(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	parts := strings.Split(raw, "/")
-	for i, part := range parts {
-		if part == "" {
-			continue
-		}
-		if looksLikeID(part) {
-			parts[i] = "{id}"
-		}
-	}
-	return strings.Join(parts, "/")
-}
-
-func looksLikeID(value string) bool {
-	if len(value) >= 8 && strings.Contains(value, "-") {
-		return true
-	}
-	if len(value) >= 3 {
-		allDigits := true
-		for _, r := range value {
-			if r < '0' || r > '9' {
-				allDigits = false
-				break
-			}
-		}
-		return allDigits
-	}
-	return false
 }
 
 func resolvePrincipal(evt shared.APIEvent) resolvedPrincipal {
@@ -624,7 +627,7 @@ func objectIDFromEvent(evt shared.APIEvent) string {
 	}
 	parts := strings.Split(evt.Application.PathRaw, "/")
 	for i := len(parts) - 1; i >= 0; i-- {
-		if looksLikeID(parts[i]) {
+		if apipath.IsIdentifier(parts[i]) {
 			return parts[i]
 		}
 	}
