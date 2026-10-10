@@ -90,6 +90,8 @@ export default function FlowMap({ onNavigate }: Props) {
       type: 'graph',
       layout: 'none',
       roam: true,
+      // Room for the caller labels on the left and service labels on the right.
+      left: 90, right: 110, top: 30, bottom: 40,
       label: { show: true, position: 'bottom', color: '#142033', fontSize: 12 },
       edgeLabel: { show: true, color: '#64748b', fontSize: 11 },
       edgeSymbol: ['none', 'arrow'],

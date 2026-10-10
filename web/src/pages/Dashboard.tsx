@@ -107,15 +107,17 @@ export default function Dashboard({ onNavigate }: Props) {
     legend: { bottom: 0, textStyle: { color: chartText } },
     series: [{
       type: 'pie',
-      radius: ['54%', '72%'],
+      radius: ['46%', '62%'],
       center: ['50%', '44%'],
+      // Empty levels stay in the legend but get no slice label.
       data: [
         { value: criticalAlerts.length, name: '严重', itemStyle: { color: '#c9352b' } },
         { value: alerts.filter(a => a.severity === 'high').length, name: '高危', itemStyle: { color: '#d96b20' } },
         { value: alerts.filter(a => a.severity === 'medium').length, name: '中危', itemStyle: { color: '#b7791f' } },
         { value: alerts.filter(a => a.severity === 'low').length, name: '低危', itemStyle: { color: '#2563a9' } },
-      ],
-      label: { color: chartText },
+      ].map(d => ({ ...d, label: { show: d.value > 0 }, labelLine: { show: d.value > 0 } })),
+      label: { color: chartText, formatter: '{b} {c}', alignTo: 'none' },
+      labelLine: { length: 10, length2: 8 },
     }],
   }
 

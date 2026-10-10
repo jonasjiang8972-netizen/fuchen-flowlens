@@ -41,20 +41,21 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
   })()
   const emptyChart = <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--fl-text-muted)' }}>暂无心跳数据（采集器每 10 秒上报一次）</div>
 
+  // Chart colors are literals: the canvas renderer cannot resolve CSS variables.
   const qpsOption = {
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis' },
     xAxis: {
       type: 'category',
       data: sampleLabels,
-      axisLine: { lineStyle: { color: 'var(--fl-border)' } },
-      axisLabel: { color: 'var(--fl-text-muted)', fontSize: 10 },
+      axisLine: { lineStyle: { color: '#d9e2ec' } },
+      axisLabel: { color: '#64748b', fontSize: 10 },
     },
     yAxis: {
       type: 'value',
-      axisLine: { lineStyle: { color: 'var(--fl-border)' } },
-      axisLabel: { color: 'var(--fl-text-muted)' },
-      splitLine: { lineStyle: { color: 'var(--fl-border)' } },
+      axisLine: { lineStyle: { color: '#d9e2ec' } },
+      axisLabel: { color: '#64748b' },
+      splitLine: { lineStyle: { color: '#edf1f6' } },
     },
     series: [{
       name: 'QPS', type: 'line', smooth: true,
@@ -72,14 +73,14 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
     xAxis: {
       type: 'category',
       data: sampleLabels,
-      axisLine: { lineStyle: { color: 'var(--fl-border)' } },
-      axisLabel: { color: 'var(--fl-text-muted)', fontSize: 10 },
+      axisLine: { lineStyle: { color: '#d9e2ec' } },
+      axisLabel: { color: '#64748b', fontSize: 10 },
     },
     yAxis: {
       type: 'value', max: 100,
-      axisLine: { lineStyle: { color: 'var(--fl-border)' } },
-      axisLabel: { color: 'var(--fl-text-muted)' },
-      splitLine: { lineStyle: { color: 'var(--fl-border)' } },
+      axisLine: { lineStyle: { color: '#d9e2ec' } },
+      axisLabel: { color: '#64748b' },
+      splitLine: { lineStyle: { color: '#edf1f6' } },
     },
     series: [{
       name: 'CPU %', type: 'line', smooth: true,
