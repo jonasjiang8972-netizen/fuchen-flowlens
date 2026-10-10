@@ -71,34 +71,32 @@ func TestBOLANormalUsageIsNotFlagged(t *testing.T) {
 	}
 }
 
-func TestBOLAMediumTraversal(t *testing.T) {
+func TestBOLAThresholdTriggers(t *testing.T) {
 	e, store, clk := newBOLA()
-	if score, _ := traverse(e, clk, "bob", 0, 20); score != 0 {
-		t.Fatalf("20 objects scored %d, want 0 (threshold is > 20)", score)
+	if score, _ := traverse(e, clk, "bob", 0, 19); score != 0 {
+		t.Fatalf("19 objects scored %d, want 0 (threshold 20)", score)
 	}
-	// 21 unique objects in 5 min: rate 4.2/min -> 60 + int(2.2*5) = 71
-	score, reason := traverse(e, clk, "bob", 20, 1)
-	if score != 71 || !strings.Contains(reason, "中等遍历") {
-		t.Fatalf("21 objects: score=%d reason=%q, want 71 medium traversal", score, reason)
+	score, reason := traverse(e, clk, "bob", 19, 1)
+	if score != 70 || !strings.Contains(reason, "对象遍历") || !strings.Contains(reason, "阈值 20") {
+		t.Fatalf("20 objects: score=%d reason=%q, want 70 at the threshold", score, reason)
 	}
 	if n := len(detectionEvents(t, store, "BOLA")); n != 1 {
 		t.Fatalf("stored %d BOLA events, want 1", n)
 	}
 }
 
-func TestBOLAHighTraversal(t *testing.T) {
+func TestBOLAScoreRisesWithTraversal(t *testing.T) {
 	e, store, clk := newBOLA()
-	// 51 unique objects in 5 min: rate 10.2/min -> 80 + int(5.2*2) = 90
-	score, reason := traverse(e, clk, "mallory", 0, 51)
-	if score != 90 || !strings.Contains(reason, "高遍历速率") {
-		t.Fatalf("51 objects: score=%d reason=%q, want 90 high traversal", score, reason)
+	// Twice the threshold: 70 + 30*(2-1)/2 = 85.
+	if score, _ := traverse(e, clk, "mallory", 0, 40); score != 85 {
+		t.Fatalf("40 objects scored %d, want 85", score)
 	}
 	evts := detectionEvents(t, store, "BOLA")
 	if len(evts) == 0 || evts[len(evts)-1].AccountID != "mallory" || evts[len(evts)-1].SourceIP != "10.0.0.1" {
 		t.Fatalf("missing or wrong BOLA event: %+v", evts)
 	}
-	// Score is capped at 100.
-	if score, _ := traverse(e, clk, "mallory", 51, 200); score != 100 {
+	// Capped at 100 from three times the threshold.
+	if score, _ := traverse(e, clk, "mallory", 40, 200); score != 100 {
 		t.Fatalf("heavy traversal scored %d, want 100", score)
 	}
 }
@@ -115,18 +113,25 @@ func TestBOLASlidingWindowExpires(t *testing.T) {
 	}
 }
 
-func TestBOLACumulativeObjectsAcrossWindows(t *testing.T) {
+func TestBOLAConfigure(t *testing.T) {
 	e, _, clk := newBOLA()
-	// 101 objects spread slowly (one every 20s = 15 per window): never a
-	// traversal burst, but the cumulative total crosses 100.
-	var score int
-	var reason string
-	for i := 0; i < 101; i++ {
-		score, reason = e.Evaluate("dave", fmt.Sprintf("doc-%d", i), "/api/docs/{id}", "10.0.0.2")
-		clk.Advance(20 * time.Second)
+	e.Configure(Params{"window_minutes": 1.0, "traverse_threshold": 5.0})
+	if score, _ := traverse(e, clk, "dave", 0, 5); score != 70 {
+		t.Fatalf("5 objects with threshold 5 scored %d, want 70", score)
 	}
-	if score != 50 || !strings.Contains(reason, "累计 101") {
-		t.Fatalf("score=%d reason=%q, want 50 cumulative", score, reason)
+	// One object every 20s: at most 3 in a one-minute window.
+	e2, _, clk2 := newBOLA()
+	e2.Configure(Params{"window_minutes": 1.0, "traverse_threshold": 5.0})
+	for i := 0; i < 20; i++ {
+		if score, _ := e2.Evaluate("erin", fmt.Sprintf("doc-%d", i), "/api/docs/{id}", "10.0.0.2"); score != 0 {
+			t.Fatalf("slow access scored %d with a one-minute window", score)
+		}
+		clk2.Advance(20 * time.Second)
+	}
+	// Invalid values fall back to the defaults.
+	e.Configure(Params{"window_minutes": 0.0, "traverse_threshold": -3.0})
+	if e.window != 5*time.Minute || e.threshold != 20 {
+		t.Fatalf("invalid config gave window=%v threshold=%d", e.window, e.threshold)
 	}
 }
 
@@ -163,42 +168,71 @@ func TestAuthUnknownIPIsClean(t *testing.T) {
 
 func TestAuthCredentialStuffing(t *testing.T) {
 	e, store, _ := newAuth()
-	fail(e, "6.6.6.6", 12, 6) // 12/min over 6 accounts -> 80 + int(2*2) = 84
+	fail(e, "6.6.6.6", 20, 6) // threshold reached over 6 accounts
 	score, reason := e.Evaluate("6.6.6.6")
-	if score != 84 || !strings.Contains(reason, "撞库特征") || !strings.Contains(reason, "/min") {
-		t.Fatalf("score=%d reason=%q, want 84 credential stuffing in /min", score, reason)
+	if score != 85 || !strings.Contains(reason, "撞库特征") || !strings.Contains(reason, "6 个不同账号") {
+		t.Fatalf("score=%d reason=%q, want 85 credential stuffing", score, reason)
 	}
 	evts := detectionEvents(t, store, "CREDENTIAL_STUFFING")
-	if len(evts) != 1 || evts[0].SourceIP != "6.6.6.6" || evts[0].Severity != "critical" {
+	if len(evts) != 1 || evts[0].SourceIP != "6.6.6.6" || evts[0].Severity != "high" {
 		t.Fatalf("unexpected events: %+v", evts)
 	}
 }
 
-func TestAuthHighFrequencyFailures(t *testing.T) {
+func TestAuthHeavyStuffingIsCritical(t *testing.T) {
 	e, store, _ := newAuth()
-	fail(e, "7.7.7.7", 6, 4) // 6/min over 4 accounts -> medium, not stored
-	if score, reason := e.Evaluate("7.7.7.7"); score != 60 || !strings.Contains(reason, "高频失败登录") {
-		t.Fatalf("score=%d reason=%q, want 60", score, reason)
+	fail(e, "6.6.6.7", 100, 10) // five times the threshold
+	if score, _ := e.Evaluate("6.6.6.7"); score != 100 {
+		t.Fatalf("score=%d, want 100", score)
 	}
-	if n := len(detectionEvents(t, store, "CREDENTIAL_STUFFING")); n != 0 {
-		t.Fatalf("stored %d events for a score below 70", n)
+	if evts := detectionEvents(t, store, "CREDENTIAL_STUFFING"); len(evts) != 1 || evts[0].Severity != "critical" {
+		t.Fatalf("unexpected events: %+v", evts)
 	}
 }
 
-func TestAuthSingleAccountTyposAreNotStuffing(t *testing.T) {
+func TestAuthBruteForceOnOneAccount(t *testing.T) {
+	e, store, _ := newAuth()
+	fail(e, "7.7.7.7", 25, 1)
+	score, reason := e.Evaluate("7.7.7.7")
+	if score != 75 || !strings.Contains(reason, "暴力破解") {
+		t.Fatalf("score=%d reason=%q, want 75 brute force", score, reason)
+	}
+	if n := len(detectionEvents(t, store, "BRUTE_FORCE")); n != 1 {
+		t.Fatalf("stored %d brute-force events, want 1", n)
+	}
+}
+
+func TestAuthBelowThresholdIsClean(t *testing.T) {
 	e, _, _ := newAuth()
-	fail(e, "8.8.8.8", 50, 1)
+	fail(e, "8.8.8.8", 19, 6)
 	if score, _ := e.Evaluate("8.8.8.8"); score != 0 {
-		t.Fatalf("one user failing repeatedly scored %d", score)
+		t.Fatalf("19 failures scored %d, want 0 (threshold 20)", score)
+	}
+	fail(e, "8.8.8.9", 10, 1) // a user mistyping a few times
+	if score, _ := e.Evaluate("8.8.8.9"); score != 0 {
+		t.Fatalf("10 failures on one account scored %d", score)
 	}
 }
 
-func TestAuthRateUsesElapsedTime(t *testing.T) {
+func TestAuthWindowSlides(t *testing.T) {
 	e, _, clk := newAuth()
-	fail(e, "9.9.9.9", 12, 6)
-	clk.Advance(10 * time.Minute) // 12 failures over 10 min = 1.2/min
+	fail(e, "9.9.9.9", 20, 6)
+	clk.Advance(11 * time.Minute) // all failures fall out of the 10-minute window
 	if score, _ := e.Evaluate("9.9.9.9"); score != 0 {
-		t.Fatalf("slow failures scored %d, want 0", score)
+		t.Fatalf("expired failures scored %d, want 0", score)
+	}
+	fail(e, "9.9.9.9", 1, 1)
+	if n := len(e.failTracker["9.9.9.9"].Failures); n != 1 {
+		t.Fatalf("tracker holds %d failures, want 1 after pruning", n)
+	}
+}
+
+func TestAuthConfigure(t *testing.T) {
+	e, _, _ := newAuth()
+	e.Configure(Params{"window_minutes": 1.0, "fail_count": 5.0, "unique_accounts": 2.0})
+	fail(e, "4.4.4.4", 5, 2)
+	if score, reason := e.Evaluate("4.4.4.4"); score != 85 || !strings.Contains(reason, "1 分钟") {
+		t.Fatalf("score=%d reason=%q, want 85 with a one-minute window", score, reason)
 	}
 }
 
@@ -276,7 +310,7 @@ func TestBOLAStoredEventsAreThrottled(t *testing.T) {
 
 func TestAuthStoredEventsAreThrottled(t *testing.T) {
 	e, store, _ := newAuth()
-	fail(e, "6.6.6.6", 12, 6)
+	fail(e, "6.6.6.6", 30, 6)
 	for i := 0; i < 5; i++ {
 		if score, _ := e.Evaluate("6.6.6.6"); score < 70 {
 			t.Fatalf("score %d, want >= 70 on every evaluation", score)
@@ -328,9 +362,60 @@ func TestBFLAAdminPrefixMatchesWholeSegments(t *testing.T) {
 		"/adminx":              false,
 		"/api/orders":          false,
 	} {
-		if got := isAdminEndpoint(path); got != want {
-			t.Errorf("isAdminEndpoint(%q) = %v, want %v", path, got, want)
+		if got := NewBFLAEngine(storage.NewMemStore()).IsAdminEndpoint(path); got != want {
+			t.Errorf("IsAdminEndpoint(%q) = %v, want %v", path, got, want)
 		}
+	}
+}
+
+func TestBFLAConfigure(t *testing.T) {
+	e, _ := newBFLA()
+	e.Configure(Params{"admin_endpoints": "/ops/", "privileged_roles": "ops_admin"})
+	if e.IsAdminEndpoint("/admin/users") || !e.IsAdminEndpoint("/ops/restart") {
+		t.Fatalf("custom management prefixes not applied")
+	}
+	e.RecordAccess("o", "ops_admin", "/ops/restart")
+	if score, _ := e.Evaluate("o", "ops_admin", "/ops/restart"); score != 0 {
+		t.Fatalf("configured privileged role scored %d", score)
+	}
+	// "admin" is no longer privileged once the list is replaced.
+	e.RecordAccess("a", "admin", "/ops/restart")
+	if score, _ := e.Evaluate("a", "admin", "/ops/restart"); score != 75 {
+		t.Fatalf("admin outside the configured list scored %d, want 75", score)
+	}
+}
+
+func TestBFLABaselineAndShare(t *testing.T) {
+	e, _ := newBFLA()
+	e.Configure(Params{"min_baseline": 3.0, "rare_share": 0.3})
+	for i := 0; i < 7; i++ {
+		e.RecordAccess("root", "admin", "/admin/users")
+	}
+	for i := 0; i < 3; i++ {
+		e.RecordAccess("ops", "operator", "/admin/users")
+	}
+	// operator is 3 of 10 = 30%, not under the 30% threshold.
+	if score, _ := e.Evaluate("ops", "operator", "/admin/users"); score != 0 {
+		t.Fatalf("30%% share scored %d with rare_share 0.3", score)
+	}
+	e.Configure(Params{"min_baseline": 3.0, "rare_share": 0.31})
+	if score, _ := e.Evaluate("ops", "operator", "/admin/users"); score != 75 {
+		t.Fatalf("30%% share scored %d with rare_share 0.31, want 75", score)
+	}
+}
+
+func TestBFLAStrictMode(t *testing.T) {
+	e, _ := newBFLA()
+	for i := 0; i < 20; i++ {
+		e.RecordAccess(fmt.Sprintf("svc-%d", i), "service", "/actuator/health")
+	}
+	if score, _ := e.Evaluate("svc-1", "service", "/actuator/health"); score != 0 {
+		t.Fatalf("common role scored %d without strict mode", score)
+	}
+	e.Configure(Params{"strict_mode": true})
+	score, reason := e.Evaluate("svc-1", "service", "/actuator/health")
+	if score != 75 || !strings.Contains(reason, "严格模式") {
+		t.Fatalf("strict mode: score=%d reason=%q", score, reason)
 	}
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Card, Descriptions, InputNumber, Modal, Switch, Table, Tabs, Tag, message } from 'antd'
+import { Button, Card, Descriptions, Input, InputNumber, Modal, Space, Switch, Table, Tabs, Tag, message } from 'antd'
 import { ruleService } from '../services/api'
 import { errorMessage } from '../services/http'
 import { useSession } from '../context/session'
@@ -10,6 +10,9 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
   const [selectedRule, setSelectedRule] = useState<any>(null)
   const [detailVisible, setDetailVisible] = useState(false)
   const [tab, setTab] = useState('all')
+  // Unsaved parameter edits of the open rule, keyed by parameter key.
+  const [draft, setDraft] = useState<Record<string, any>>({})
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     ruleService.list().then(setRules)
@@ -27,23 +30,61 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
       return
     }
     setRules(prev => prev.map(r => r.rule_id === ruleId ? { ...r, enabled } : r))
+    setSelectedRule((prev: any) => (prev && prev.rule_id === ruleId ? { ...prev, enabled } : prev))
     message.success(`规则 ${enabled ? '已启用' : '已禁用'}`)
   }
 
   const handleView = async (ruleId: string) => {
     const detail = await ruleService.detail(ruleId)
     setSelectedRule(detail)
+    setDraft({})
     setDetailVisible(true)
   }
 
-  const handleApplyConfig = async (ruleId: string, key: string, value: any) => {
+  // The value in effect: the saved one, else the default.
+  const currentValue = (param: any) => (param.value !== undefined && param.value !== null ? param.value : param.default_value)
+  const shownValue = (param: any) => (param.key in draft ? draft[param.key] : currentValue(param))
+
+  const editParam = (param: any, value: any) => {
+    setDraft(prev => {
+      const next = { ...prev }
+      if (value === currentValue(param)) delete next[param.key]
+      else next[param.key] = value
+      return next
+    })
+  }
+
+  const handleSaveParams = async () => {
+    if (!selectedRule || Object.keys(draft).length === 0) return
+    for (const param of selectedRule.params || []) {
+      if ((param.type === 'int' || param.type === 'float') && param.key in draft && (draft[param.key] === null || draft[param.key] === undefined)) {
+        message.error(`${param.label} 不能为空`)
+        return
+      }
+    }
+    setSaving(true)
+    let updated: any
     try {
-      await ruleService.update(ruleId, { config: { [key]: value } })
+      updated = await ruleService.update(selectedRule.rule_id, { config: draft })
     } catch (err) {
       message.error(errorMessage(err))
+      setSaving(false)
       return
     }
-    message.success('配置已更新')
+    setSaving(false)
+    // The platform returns the saved rule; the static demo build does not.
+    const next = updated?.rule_id
+      ? updated
+      : { ...selectedRule, params: selectedRule.params.map((p: any) => (p.key in draft ? { ...p, value: draft[p.key] } : p)) }
+    setSelectedRule(next)
+    setRules(prev => prev.map(r => (r.rule_id === next.rule_id ? { ...r, ...next } : r)))
+    setDraft({})
+    message.success('参数已保存，立即生效')
+  }
+
+  const formatValue = (param: any, value: any) => {
+    if (param.type === 'bool') return value ? '开启' : '关闭'
+    return `${value}${param.unit ? ' ' + param.unit : ''}`
   }
 
   const filteredRules = tab === 'all' ? rules : rules.filter(r => r.category === tab)
@@ -116,42 +157,58 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
             </Descriptions>
 
             <div style={{ marginTop: 20 }}>
-              <div style={{ fontWeight: 600, marginBottom: 12 }}>可调参数</div>
-              {selectedRule.params?.map((param: any) => (
-                <div key={param.key} style={{ marginBottom: 16, padding: 12, background: '#16233A', borderRadius: 4 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                    <span style={{ fontWeight: 500 }}>{param.label}</span>
-                    <span className="mono" style={{ color: '#8A93A3', fontSize: 12 }}>{param.key}</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+                <span style={{ fontWeight: 600 }}>可调参数</span>
+                {canManage && (
+                  <Space>
+                    <Button size="small" disabled={Object.keys(draft).length === 0 || saving} onClick={() => setDraft({})}>撤销修改</Button>
+                    <Button size="small" type="primary" loading={saving} disabled={Object.keys(draft).length === 0} onClick={handleSaveParams}>
+                      保存{Object.keys(draft).length > 0 ? `（${Object.keys(draft).length} 项）` : ''}
+                    </Button>
+                  </Space>
+                )}
+              </div>
+              {!selectedRule.enabled && (
+                <div style={{ color: '#D6A243', fontSize: 12, marginBottom: 12 }}>规则已停用：参数会保存，但启用前不会产生检测和告警。</div>
+              )}
+              {selectedRule.params?.map((param: any) => {
+                const changed = param.key in draft
+                return (
+                  <div key={param.key} style={{ marginBottom: 16, padding: 12, background: '#16233A', borderRadius: 4, border: changed ? '1px solid #D6A243' : '1px solid transparent' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                      <span style={{ fontWeight: 500 }}>{param.label}{changed && <Tag color="gold" style={{ marginLeft: 8 }}>未保存</Tag>}</span>
+                      <span className="mono" style={{ color: '#8A93A3', fontSize: 12 }}>{param.key}</span>
+                    </div>
+                    <div style={{ color: '#8A93A3', fontSize: 12, marginBottom: 8 }}>
+                      {param.description}
+                      <span style={{ marginLeft: 8 }}>默认值：{formatValue(param, param.default_value)}</span>
+                      {(param.type === 'int' || param.type === 'float') && (param.min || param.max) ? <span style={{ marginLeft: 8 }}>范围：{param.min}～{param.max}</span> : null}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                      {param.type === 'bool' ? (
+                        <Switch checked={shownValue(param) === true} disabled={!canManage} onChange={(v) => editParam(param, v)} />
+                      ) : param.type === 'float' || param.type === 'int' ? (
+                        <InputNumber
+                          value={shownValue(param)}
+                          min={param.min}
+                          max={param.max}
+                          step={param.type === 'int' ? 1 : (param.max && param.max <= 1 ? 0.01 : 0.1)}
+                          precision={param.type === 'int' ? 0 : undefined}
+                          disabled={!canManage}
+                          onChange={(v) => editParam(param, v)}
+                        />
+                      ) : (
+                        <Input
+                          value={shownValue(param) ?? ''}
+                          disabled={!canManage}
+                          onChange={(e) => editParam(param, e.target.value)}
+                        />
+                      )}
+                      {param.unit && <span style={{ color: '#8A93A3', fontSize: 12, whiteSpace: 'nowrap' }}>{param.unit}</span>}
+                    </div>
                   </div>
-                  <div style={{ color: '#8A93A3', fontSize: 12, marginBottom: 8 }}>{param.description}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    {param.type === 'bool' ? (
-                      <Switch
-                        defaultChecked={param.default_value === true}
-                        disabled={!canManage}
-                        onChange={(v) => handleApplyConfig(selectedRule.rule_id, param.key, v)}
-                      />
-                    ) : param.type === 'float' || param.type === 'int' ? (
-                      <InputNumber
-                        defaultValue={param.default_value}
-                        min={param.min}
-                        max={param.max}
-                        step={param.type === 'int' ? 1 : 0.1}
-                        disabled={!canManage}
-                        onBlur={(e) => handleApplyConfig(selectedRule.rule_id, param.key, Number(e.target.value))}
-                      />
-                    ) : (
-                      <input
-                        defaultValue={param.default_value as string}
-                        disabled={!canManage}
-                        onBlur={(e) => handleApplyConfig(selectedRule.rule_id, param.key, e.target.value)}
-                        style={{ background: '#0B1420', border: '1px solid #25344A', color: '#EDEAE0', padding: '4px 8px', borderRadius: 2, width: '100%' }}
-                      />
-                    )}
-                    {param.unit && <span style={{ color: '#8A93A3', fontSize: 12 }}>{param.unit}</span>}
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         )}

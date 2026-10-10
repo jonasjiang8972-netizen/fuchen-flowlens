@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +33,7 @@ type PlatformServer struct {
 	bolaEngine     *engine.BOLAEngine
 	authEngine     *engine.AuthFailureEngine
 	bflaEngine     *engine.BFLAEngine
+	dlpEngine      *engine.DLPEngine
 	ingestPipeline *ingest.Pipeline
 	redactor       *redact.Redactor
 	DemoMode       bool
@@ -94,8 +97,10 @@ func newServer(store storage.Store, agents *service.AgentService, assets *servic
 		bolaEngine:   engine.NewBOLAEngine(store),
 		authEngine:   engine.NewAuthFailureEngine(store),
 		bflaEngine:   engine.NewBFLAEngine(store),
+		dlpEngine:    engine.NewDLPEngine(store),
 		redactor:     redact.New(""),
 	}
+	srv.applyAllRuleConfigs()
 	srv.ingestPipeline = ingest.NewPipeline(20000, srv.processIngestEvent)
 	return srv
 }
@@ -359,43 +364,8 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 		SourceIP:  evt.Network.SrcIP,
 		Status:    int(evt.Application.StatusCode),
 	}
-
-	s.bflaEngine.RecordAccess(req.AccountID, req.Role, req.Endpoint)
-	if req.Status == 401 {
-		s.authEngine.RecordFailure(req.SourceIP, req.AccountID)
-	}
-
-	riskScore := 0
-	reason := ""
-	bolaScore, bolaReason := s.bolaEngine.Evaluate(req.AccountID, req.ObjectID, req.Endpoint, req.SourceIP)
-	if bolaScore > riskScore {
-		riskScore = bolaScore
-		reason = bolaReason
-	}
-	authScore, authReason := s.authEngine.Evaluate(req.SourceIP)
-	if authScore > riskScore {
-		riskScore = authScore
-		reason = authReason
-	}
-	bflaScore, bflaReason := s.bflaEngine.Evaluate(req.AccountID, req.Role, req.Endpoint)
-	if bflaScore > riskScore {
-		riskScore = bflaScore
-		reason = bflaReason
-	}
-	if len(sensitiveFields) > 0 && strings.Contains(strings.ToLower(evt.Application.PathNormalized), "export") && riskScore < 75 {
-		riskScore = 75
-		reason = "敏感数据导出接口出现真实流量"
-	}
-
-	if riskScore >= 70 {
-		sourceRequirement, severity, title := detectionMetadata(riskScore, reason, req)
-		if len(sensitiveFields) > 0 && strings.Contains(reason, "敏感数据") {
-			sourceRequirement = "FR-DLP-003"
-			title = "敏感数据接口自动告警"
-		}
-		s.alertService.CreateDetectionAlert(sourceRequirement, severity, title, reason, req.SourceIP, req.AccountID, riskScore, principal.Confidence)
-		s.ruleService.IncrementHit(ruleIDForRequirement(sourceRequirement))
-	}
+	d := s.evaluate(detectInput{req: req, sensitive: exposedSensitiveFields(evt)})
+	s.raise(d, req, principal.Confidence)
 
 	if evt.AgentID != "" {
 		s.agentService.UpdateHeartbeat(evt.AgentID)
@@ -404,104 +374,23 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 
 // ─── Detection Engine Adapters ─────────────────────────────────
 
+// RecordAccessHandler runs the detection engines on one access described in
+// the request body, as traffic would, and raises an alert when warranted.
 func (s *PlatformServer) RecordAccessHandler(c *gin.Context) {
 	var req accessDetectionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "invalid request"})
 		return
 	}
-	s.bflaEngine.RecordAccess(req.AccountID, req.Role, req.Endpoint)
-
-	if req.Status == 401 {
-		s.authEngine.RecordFailure(req.SourceIP, req.AccountID)
-	}
-
-	riskScore := 0
-	reason := ""
-
-	bolaScore, bolaReason := s.bolaEngine.Evaluate(req.AccountID, req.ObjectID, req.Endpoint, req.SourceIP)
-	if bolaScore > riskScore {
-		riskScore = bolaScore
-		reason = bolaReason
-	}
-
-	authScore, authReason := s.authEngine.Evaluate(req.SourceIP)
-	if authScore > riskScore {
-		riskScore = authScore
-		reason = authReason
-	}
-
-	bflaScore, bflaReason := s.bflaEngine.Evaluate(req.AccountID, req.Role, req.Endpoint)
-	if bflaScore > riskScore {
-		riskScore = bflaScore
-		reason = bflaReason
-	}
-
-	var alert *service.Alert
-	if riskScore >= 70 {
-		sourceRequirement, severity, title := detectionMetadata(riskScore, reason, req)
-		created := s.alertService.CreateDetectionAlert(
-			sourceRequirement,
-			severity,
-			title,
-			reason,
-			req.SourceIP,
-			req.AccountID,
-			riskScore,
-			0.86,
-		)
-		alert = &created
-		s.ruleService.IncrementHit(ruleIDForRequirement(sourceRequirement))
-	}
-
+	d := s.evaluate(detectInput{req: req})
+	alert := s.raise(d, req, 0.86)
 	c.JSON(200, gin.H{
-		"risk_score": riskScore,
-		"reason":     reason,
-		"evaluated":  riskScore > 0,
+		"risk_score": d.Score,
+		"reason":     d.Reason,
+		"rule_id":    d.RuleID,
+		"evaluated":  d.Score > 0,
 		"alert":      alert,
 	})
-}
-
-func detectionMetadata(riskScore int, reason string, req accessDetectionRequest) (string, string, string) {
-	severity := "high"
-	if riskScore >= 90 {
-		severity = "critical"
-	}
-	if req.Status == 401 {
-		return "FR-DET-002", severity, "认证失败/撞库风险自动告警"
-	}
-	if req.Endpoint != "" && isAdminEndpointPath(req.Endpoint) {
-		return "FR-DET-005", severity, "BFLA 越权访问自动告警"
-	}
-	if reason != "" {
-		return "FR-DET-001", severity, "BOLA 对象遍历自动告警"
-	}
-	return "FR-ALT-001", severity, "高风险访问自动告警"
-}
-
-func isAdminEndpointPath(endpoint string) bool {
-	adminPrefixes := []string{"/admin", "/api/v1/admin", "/api/v1/system", "/api/v1/users/roles", "/manage", "/supervisor", "/actuator", "/swagger-ui", "/api/v1/audit"}
-	for _, prefix := range adminPrefixes {
-		if len(endpoint) >= len(prefix) && endpoint[:len(prefix)] == prefix {
-			return true
-		}
-	}
-	return false
-}
-
-func ruleIDForRequirement(requirement string) string {
-	switch requirement {
-	case "FR-DET-001":
-		return "R-BOLA-001"
-	case "FR-DET-002":
-		return "R-AUTH-001"
-	case "FR-DET-005":
-		return "R-BFLA-001"
-	case "FR-DLP-001", "FR-DLP-003":
-		return "R-DLP-001"
-	default:
-		return ""
-	}
 }
 
 type resolvedPrincipal struct {
@@ -616,44 +505,115 @@ func networkRole(ip string) string {
 	return "external"
 }
 
+// classifySensitiveFields lists the sensitive field names an event carries
+// anywhere (query, request headers, response body), for the asset
+// inventory.
 func classifySensitiveFields(evt shared.APIEvent) []string {
 	seen := map[string]bool{}
-	add := func(field string) {
-		if field != "" {
-			seen[field] = true
-		}
-	}
 	for key := range evt.Content.QueryParams {
 		if isSensitiveName(key) {
-			add(key)
+			seen[key] = true
 		}
 	}
 	for key := range evt.Content.RequestHeaders {
 		if isSensitiveName(key) {
-			add(key)
+			seen[key] = true
 		}
 	}
-	bodyText := strings.ToLower(string(evt.Content.ResponseBody))
-	for _, marker := range []string{"phone", "mobile", "id_card", "card_number", "token", "password", "address", "email"} {
-		if strings.Contains(bodyText, marker) {
-			add(marker)
+	for _, key := range responseFieldNames(evt.Content.ResponseBody) {
+		if isSensitiveName(key) {
+			seen[key] = true
 		}
 	}
-	result := make([]string, 0, len(seen))
-	for field := range seen {
-		result = append(result, field)
+	return sortedKeys(seen)
+}
+
+// exposedSensitiveFields lists the sensitive field names an endpoint exposes:
+// fields of the response body and query parameters (sensitive data in URLs
+// ends up in logs). Request headers are left out: an Authorization or API
+// key header is the caller's own credential, not exposed data.
+func exposedSensitiveFields(evt shared.APIEvent) []string {
+	seen := map[string]bool{}
+	for key := range evt.Content.QueryParams {
+		if isSensitiveName(key) {
+			seen[key] = true
+		}
 	}
-	return result
+	for _, key := range responseFieldNames(evt.Content.ResponseBody) {
+		if isSensitiveName(key) {
+			seen[key] = true
+		}
+	}
+	return sortedKeys(seen)
 }
 
 func isSensitiveName(name string) bool {
-	n := strings.ToLower(name)
-	for _, marker := range []string{"phone", "mobile", "id_card", "card", "token", "password", "secret", "address", "email"} {
-		if strings.Contains(n, marker) {
-			return true
+	return engine.SensitiveType(name) != ""
+}
+
+// Bounds for walking a response body.
+const (
+	maxBodyScan   = 256 << 10
+	maxFieldNames = 500
+	maxJSONDepth  = 8
+)
+
+// responseFieldNames returns the object keys of a JSON response body
+// (nested, bounded). For a non-JSON body it falls back to a keyword scan.
+func responseFieldNames(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	if len(body) > maxBodyScan {
+		body = body[:maxBodyScan]
+	}
+	var doc interface{}
+	if err := json.Unmarshal(body, &doc); err == nil {
+		seen := map[string]bool{}
+		collectKeys(doc, 0, seen)
+		return sortedKeys(seen)
+	}
+	text := strings.ToLower(string(body))
+	var found []string
+	for _, marker := range []string{"phone", "mobile", "id_card", "card_number", "bank_card", "password", "token", "secret", "address", "email"} {
+		if strings.Contains(text, marker) {
+			found = append(found, marker)
 		}
 	}
-	return false
+	return found
+}
+
+func collectKeys(v interface{}, depth int, seen map[string]bool) {
+	if depth > maxJSONDepth || len(seen) >= maxFieldNames {
+		return
+	}
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for k, child := range t {
+			if len(seen) >= maxFieldNames {
+				return
+			}
+			seen[k] = true
+			collectKeys(child, depth+1, seen)
+		}
+	case []interface{}:
+		// Elements of an array usually share a shape; a few are enough.
+		for i, child := range t {
+			if i >= 5 {
+				break
+			}
+			collectKeys(child, depth+1, seen)
+		}
+	}
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func objectIDFromEvent(evt shared.APIEvent) string {
@@ -716,7 +676,6 @@ func (s *PlatformServer) UpdateRuleHandler(c *gin.Context) {
 	var req struct {
 		Enabled *bool                  `json:"enabled"`
 		Config  map[string]interface{} `json:"config"`
-		Params  []service.RuleParam    `json:"params"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -733,12 +692,13 @@ func (s *PlatformServer) UpdateRuleHandler(c *gin.Context) {
 		return
 	}
 
-	if req.Config != nil || req.Params != nil {
-		rule, err := s.ruleService.UpdateConfig(id, req.Config, req.Params)
+	if req.Config != nil {
+		rule, err := s.ruleService.UpdateConfig(id, req.Config)
 		if err != nil {
 			serviceErr(c, err)
 			return
 		}
+		s.applyRuleConfig(id)
 		c.JSON(200, rule)
 		return
 	}
@@ -783,6 +743,10 @@ func (s *PlatformServer) FlowMapHandler(c *gin.Context) {
 func serviceErr(c *gin.Context, err error) {
 	if errors.Is(err, service.ErrNotFound) {
 		c.JSON(404, gin.H{"error": "记录不存在"})
+		return
+	}
+	if errors.Is(err, service.ErrInvalid) {
+		c.JSON(400, gin.H{"error": strings.TrimPrefix(err.Error(), service.ErrInvalid.Error()+": ")})
 		return
 	}
 	logger.L().Errorf("%s %s: %v", c.Request.Method, c.Request.URL.Path, err)

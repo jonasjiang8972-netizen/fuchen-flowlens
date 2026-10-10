@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strings"
 	"sync"
 	"time"
 )
@@ -37,6 +39,9 @@ type RuleParam struct {
 	Max          float64     `json:"max,omitempty"`
 	Unit         string      `json:"unit,omitempty"`
 	Description  string      `json:"description"`
+	// Value is the effective value (the saved one, else DefaultValue). It is
+	// filled in on copies handed out by the service and never stored.
+	Value interface{} `json:"value"`
 }
 
 // ─── RuleService ──────────────────────────────────────────────
@@ -70,14 +75,40 @@ func NewRuleServiceFrom(ctx context.Context, repo Repository) (*RuleService, err
 		}
 		s.rules[id] = &r
 	}
-	var added []string
-	for id, r := range NewRuleService().rules {
-		if _, ok := s.rules[id]; !ok {
-			s.rules[id] = r
-			added = append(added, id)
+	// Built-in rules take their definitions from this version; a stored rule
+	// keeps its switch, statistics and the parameter values that are still
+	// valid under the current definitions.
+	var changed []string
+	for id, def := range NewRuleService().rules {
+		stored, ok := s.rules[id]
+		if !ok {
+			s.rules[id] = def
+			changed = append(changed, id)
+			continue
+		}
+		merged := def.clone()
+		for i := range merged.Params {
+			merged.Params[i].Value = nil // computed on read, never stored
+		}
+		merged.Enabled = stored.Enabled
+		merged.HitCount = stored.HitCount
+		merged.LastHitAt = stored.LastHitAt
+		merged.CreatedAt = stored.CreatedAt
+		merged.UpdatedAt = stored.UpdatedAt
+		merged.Config = map[string]interface{}{}
+		for key, v := range stored.Config {
+			if param, ok := merged.param(key); ok {
+				if norm, err := param.normalize(v); err == nil {
+					merged.Config[key] = norm
+				}
+			}
+		}
+		if string(mustJSON(merged)) != string(mustJSON(stored)) {
+			s.rules[id] = merged
+			changed = append(changed, id)
 		}
 	}
-	if err := s.p.writeThrough(ctx, added, s.snapshot); err != nil {
+	if err := s.p.writeThrough(ctx, changed, s.snapshot); err != nil {
 		return nil, fmt.Errorf("save default rules: %w", err)
 	}
 	return s, nil
@@ -90,6 +121,12 @@ func (r *Rule) clone() *Rule {
 		c.Config[k] = v
 	}
 	c.Params = append([]RuleParam(nil), r.Params...)
+	for i := range c.Params {
+		c.Params[i].Value = c.Params[i].DefaultValue
+		if v, ok := r.Config[c.Params[i].Key]; ok {
+			c.Params[i].Value = v
+		}
+	}
 	if r.LastHitAt != nil {
 		t := *r.LastHitAt
 		c.LastHitAt = &t
@@ -116,111 +153,107 @@ func (s *RuleService) Flush(ctx context.Context) (int, error) {
 
 func (s *RuleService) seedRules() {
 	now := time.Now()
-	s.rules["R-BOLA-001"] = &Rule{
-		ID: "R-BOLA-001", RequirementFR: "FR-DET-001",
-		Name: "BOLA 对象遍历检测", Category: "越权访问",
-		Severity: "high", Enabled: true, DefaultScore: 80,
-		Description:    "检测账号在短时间高频访问不同对象ID的行为，识别对象级越权遍历攻击。基于账号-对象基线的偏离度加权评分。",
-		Recommendation: "建议对该账号实施限流或临时封禁，检查该接口的对象级鉴权逻辑是否完整。",
-		Config:         map[string]interface{}{"baseline_window": "5m", "score_algorithm": "weighted"},
-		HitCount:       23, LastHitAt: &now,
-		Params: []RuleParam{
-			{Key: "traverse_threshold", Label: "遍历阈值", Type: "int", DefaultValue: 20.0, Min: 5, Max: 500, Unit: "个", Description: "5分钟内不同对象ID数量超过此值触发告警"},
-			{Key: "rate_threshold", Label: "速率阈值", Type: "float", DefaultValue: 2.0, Min: 0.5, Max: 100, Unit: "/s", Description: "遍历速率超过此值加重评分"},
-			{Key: "suspicion_score", Label: "怀疑基础分", Type: "int", DefaultValue: 60, Min: 0, Max: 100, Unit: "分", Description: "触发阈值时的基础风险评分"},
-		},
-		CreatedAt: now.Add(-30 * 24 * time.Hour), UpdatedAt: now.Add(-1 * time.Hour),
+	for _, r := range defaultRules() {
+		r := r
+		r.CreatedAt, r.UpdatedAt = now, now
+		s.rules[r.ID] = &r
 	}
-	s.rules["R-AUTH-001"] = &Rule{
-		ID: "R-AUTH-001", RequirementFR: "FR-DET-002",
-		Name: "认证失效检测", Category: "身份安全",
-		Severity: "critical", Enabled: true, DefaultScore: 90,
-		Description:    "检测单 IP 短时间多重账号登录失败行为，识别撞库/凭证填充攻击。结合失败率、账号数、速率三维度加权。",
-		Recommendation: "建议对该 IP 实施临时封禁，检查是否有账号泄露风险。",
-		Config:         map[string]interface{}{"window": "10m", "algorithm": "multi_dimension"},
-		HitCount:       7, LastHitAt: &now,
-		Params: []RuleParam{
-			{Key: "fail_count", Label: "失败次数阈值", Type: "int", DefaultValue: 30, Min: 5, Max: 500, Unit: "次", Description: "时间窗口内失败次数超过此值触发"},
-			{Key: "unique_accounts", Label: "不同账号数", Type: "int", DefaultValue: 10, Min: 2, Max: 200, Unit: "个", Description: "涉及不同账号数超过此值加重"},
-			{Key: "fail_rate", Label: "失败率阈值", Type: "float", DefaultValue: 0.8, Min: 0.1, Max: 1.0, Unit: "%", Description: "失败请求占比超过此值加权"},
+}
+
+// defaultRules are the built-in detection rules. Their definitions
+// (name, description, parameters and ranges) are owned by the code; stored
+// rules keep only their switch, parameter values and hit statistics.
+func defaultRules() []Rule {
+	return []Rule{
+		{
+			ID: "R-BOLA-001", RequirementFR: "FR-DET-001",
+			Name: "BOLA 对象遍历检测", Category: "越权访问",
+			Severity: "high", Enabled: true, DefaultScore: 70,
+			Description:    "同一账号在统计窗口内访问的不同对象 ID 数达到阈值时告警，识别对象级越权遍历。达到阈值评 70 分，达到 3 倍阈值评 100 分。",
+			Recommendation: "对该账号限流或临时封禁，检查该接口的对象级鉴权逻辑是否完整。",
+			Params: []RuleParam{
+				{Key: "window_minutes", Label: "统计窗口", Type: "int", DefaultValue: 5, Min: 1, Max: 60, Unit: "分钟", Description: "按此时间窗口统计每个账号访问的不同对象数"},
+				{Key: "traverse_threshold", Label: "遍历阈值", Type: "int", DefaultValue: 20, Min: 5, Max: 1000, Unit: "个", Description: "窗口内访问的不同对象 ID 数达到此值触发告警"},
+			},
 		},
-		CreatedAt: now.Add(-30 * 24 * time.Hour), UpdatedAt: now.Add(-2 * time.Hour),
-	}
-	s.rules["R-BFLA-001"] = &Rule{
-		ID: "R-BFLA-001", RequirementFR: "FR-DET-005",
-		Name: "BFLA 越权操作检测", Category: "越权访问",
-		Severity: "high", Enabled: true, DefaultScore: 75,
-		Description:    "检测低权限账号访问管理端点或执行高权限操作。基于角色-接口访问矩阵，识别非授权角色的操作行为。",
-		Recommendation: "检查该账号的角色配置是否正确，审核该接口的鉴权策略。",
-		Config:         map[string]interface{}{"matrix_window": "1h", "strict_mode": false},
-		HitCount:       5, LastHitAt: &now,
-		Params: []RuleParam{
-			{Key: "admin_endpoints", Label: "管理端点列表", Type: "string", DefaultValue: "/admin,/api/v1/admin,/manage,/supervisor", Unit: "路径前缀", Description: "逗号分隔的管理端点前缀"},
-			{Key: "allowed_roles", Label: "允许的管理角色", Type: "string", DefaultValue: "super_admin,security_admin", Description: "允许访问管理端点的角色"},
-			{Key: "strict_mode", Label: "严格模式", Type: "bool", DefaultValue: false, Description: "开启后所有未经历史访问的管理端点请求即告警"},
+		{
+			ID: "R-AUTH-001", RequirementFR: "FR-DET-002",
+			Name: "认证失效检测", Category: "身份安全",
+			Severity: "critical", Enabled: true, DefaultScore: 75,
+			Description:    "同一来源 IP 在统计窗口内认证失败（HTTP 401）次数达到阈值时告警。涉及账号数达到阈值判定为撞库（85～100 分），否则判定为暴力破解（75 分）。",
+			Recommendation: "对该 IP 临时封禁，排查涉及账号是否存在口令泄露。",
+			Params: []RuleParam{
+				{Key: "window_minutes", Label: "统计窗口", Type: "int", DefaultValue: 10, Min: 1, Max: 120, Unit: "分钟", Description: "按此时间窗口统计每个来源 IP 的认证失败"},
+				{Key: "fail_count", Label: "失败次数阈值", Type: "int", DefaultValue: 20, Min: 3, Max: 1000, Unit: "次", Description: "窗口内认证失败次数达到此值触发告警"},
+				{Key: "unique_accounts", Label: "撞库账号数", Type: "int", DefaultValue: 5, Min: 2, Max: 500, Unit: "个", Description: "涉及的不同账号数达到此值判定为撞库，否则为暴力破解"},
+			},
 		},
-		CreatedAt: now.Add(-25 * 24 * time.Hour), UpdatedAt: now.Add(-3 * time.Hour),
-	}
-	s.rules["R-DLP-001"] = &Rule{
-		ID: "R-DLP-001", RequirementFR: "FR-DLP-001",
-		Name: "敏感数据检测", Category: "数据安全",
-		Severity: "high", Enabled: true, DefaultScore: 70,
-		Description:    "自动识别响应体中包含的敏感数据（身份证号、手机号、银行卡号等），按类型和数量分级告警。",
-		Recommendation: "检查该接口返回的敏感字段是否必须，必要时实施脱敏处理。",
-		Config:         map[string]interface{}{"engine": "regex", "masking_check": true},
-		HitCount:       0,
-		Params: []RuleParam{
-			{Key: "id_card", Label: "身份证检测", Type: "bool", DefaultValue: true, Description: "启用18位身份证号正则+校验位检测"},
-			{Key: "phone", Label: "手机号检测", Type: "bool", DefaultValue: true, Description: "启用中国大陆手机号检测"},
-			{Key: "bank_card", Label: "银行卡检测", Type: "bool", DefaultValue: true, Description: "启用银行卡号 Luhn 校验检测"},
-			{Key: "max_fields", Label: "单接口敏感字段上限", Type: "int", DefaultValue: 5, Min: 1, Max: 100, Description: "超过此数量加重风险评分"},
+		{
+			ID: "R-BFLA-001", RequirementFR: "FR-DET-005",
+			Name: "BFLA 越权操作检测", Category: "越权访问",
+			Severity: "high", Enabled: true, DefaultScore: 75,
+			Description:    "非管理角色访问管理端点时告警：端点历史访问不足基线次数，或该角色在端点流量中的占比低于阈值。",
+			Recommendation: "检查该账号的角色配置是否正确，审核该接口的鉴权策略。",
+			Params: []RuleParam{
+				{Key: "admin_endpoints", Label: "管理端点前缀", Type: "string", DefaultValue: "/admin,/api/v1/admin,/api/v1/system,/api/v1/users/roles,/manage,/supervisor,/actuator,/swagger-ui,/api/v1/audit", Unit: "路径前缀", Description: "逗号分隔，按完整路径段匹配"},
+				{Key: "privileged_roles", Label: "管理角色", Type: "string", DefaultValue: "admin,administrator,super_admin,superadmin,root,sysadmin,system_admin,security_admin", Description: "逗号分隔，这些角色访问管理端点不告警"},
+				{Key: "min_baseline", Label: "基线访问次数", Type: "int", DefaultValue: 10, Min: 1, Max: 100000, Unit: "次", Description: "端点历史访问达到此次数后才按占比判断，不足时非管理角色访问即告警"},
+				{Key: "rare_share", Label: "罕见占比阈值", Type: "float", DefaultValue: 0.05, Min: 0.001, Max: 0.5, Description: "某角色在该端点流量中的占比低于此值时告警（0.05 即 5%）"},
+				{Key: "strict_mode", Label: "严格模式", Type: "bool", DefaultValue: false, Description: "开启后非管理角色访问管理端点一律告警"},
+			},
 		},
-		CreatedAt: now.Add(-20 * 24 * time.Hour), UpdatedAt: now.Add(-12 * time.Hour),
-	}
-	s.rules["R-BOT-001"] = &Rule{
-		ID: "R-BOT-001", RequirementFR: "FR-RISK-002",
-		Name: "爬虫行为检测", Category: "业务风控",
-		Severity: "medium", Enabled: false, DefaultScore: 50,
-		Description:    "基于设备指纹、请求间隔规律、资源加载特征识别自动化爬虫行为。",
-		Recommendation: "对该设备指纹实施验证码挑战或限流。",
-		Config:         map[string]interface{}{"fingerprint": "ja3", "behavior_window": "10m"},
-		HitCount:       0,
-		Params: []RuleParam{
-			{Key: "interval_variance", Label: "请求间隔方差阈值", Type: "float", DefaultValue: 0.1, Min: 0.01, Max: 1.0, Unit: "s", Description: "请求间隔标准差小于此值判定为脚本"},
-			{Key: "no_resource", Label: "无资源加载触发", Type: "bool", DefaultValue: true, Description: "无CSS/JS/图片加载的请求判定为爬虫"},
-			{Key: "burst_threshold", Label: "短时爆发阈值", Type: "int", DefaultValue: 100, Min: 10, Max: 1000, Description: "1分钟内请求超过此值触发"},
+		{
+			ID: "R-DLP-001", RequirementFR: "FR-DLP-001",
+			Name: "敏感数据检测", Category: "数据安全",
+			Severity: "high", Enabled: true, DefaultScore: 75,
+			Description:    "按字段名识别身份证号、手机号、银行卡号、凭证等敏感字段。导出类接口返回敏感字段，或单次返回的敏感字段数达到阈值时告警；含凭证时评 85 分。",
+			Recommendation: "检查该接口返回的敏感字段是否必须，必要时实施脱敏或最小化返回。",
+			Params: []RuleParam{
+				{Key: "id_card", Label: "身份证号", Type: "bool", DefaultValue: true, Description: "识别 id_card、id_no、cert_no 等字段"},
+				{Key: "phone", Label: "手机号", Type: "bool", DefaultValue: true, Description: "识别 phone、mobile 等字段"},
+				{Key: "bank_card", Label: "银行卡号", Type: "bool", DefaultValue: true, Description: "识别 card、bank、account_no 等字段"},
+				{Key: "credential", Label: "凭证", Type: "bool", DefaultValue: true, Description: "识别 password、token、secret、api_key 等字段"},
+				{Key: "contact", Label: "地址与邮箱", Type: "bool", DefaultValue: false, Description: "识别 address、email 等字段"},
+				{Key: "export_keywords", Label: "导出接口关键词", Type: "string", DefaultValue: "export,download,dump,batch", Description: "逗号分隔，路径包含这些关键词且返回敏感字段时告警"},
+				{Key: "max_fields", Label: "敏感字段数阈值", Type: "int", DefaultValue: 3, Min: 1, Max: 50, Unit: "个", Description: "单次请求涉及的敏感字段数达到此值时告警"},
+			},
 		},
-		CreatedAt: now.Add(-15 * 24 * time.Hour), UpdatedAt: now.Add(-24 * time.Hour),
-	}
-	s.rules["R-RATE-001"] = &Rule{
-		ID: "R-RATE-001", RequirementFR: "FR-DET-004",
-		Name: "资源消耗异常检测", Category: "可用性",
-		Severity: "medium", Enabled: false, DefaultScore: 50,
-		Description:    "检测接口 QPS 超出历史基线一定倍数的异常流量，识别资源耗尽攻击或异常突发请求。",
-		Recommendation: "对该来源实施限流策略，检查是否遭遇DDoS攻击。",
-		Config:         map[string]interface{}{"baseline_period": "7d", "alert_multiplier": 5},
-		HitCount:       0,
-		Params: []RuleParam{
-			{Key: "multiplier", Label: "基线倍数阈值", Type: "float", DefaultValue: 5.0, Min: 1.5, Max: 100, Description: "当前QPS超历史基线N倍时触发"},
-			{Key: "min_qps", Label: "最低QPS门槛", Type: "int", DefaultValue: 500, Min: 10, Max: 100000, Unit: "QPS", Description: "低于此QPS不检测，避免低频接口误报"},
-			{Key: "window", Label: "检测窗口", Type: "int", DefaultValue: 5, Min: 1, Max: 60, Unit: "分钟", Description: "统计窗口大小"},
+		{
+			ID: "R-BOT-001", RequirementFR: "FR-RISK-002",
+			Name: "爬虫行为检测", Category: "业务风控",
+			Severity: "medium", Enabled: true, DefaultScore: 70,
+			Description:    "同一调用方 1 分钟内请求数达到爆发阈值，或请求间隔高度规律（变异系数低于阈值）时判定为自动化脚本；两者同时出现评 85 分。",
+			Recommendation: "对该调用方实施验证码挑战或限流。",
+			Params: []RuleParam{
+				{Key: "burst_threshold", Label: "爆发阈值", Type: "int", DefaultValue: 120, Min: 10, Max: 100000, Unit: "次/分钟", Description: "1 分钟内请求数达到此值触发"},
+				{Key: "regularity_cv", Label: "间隔规律性阈值", Type: "float", DefaultValue: 0.1, Min: 0.01, Max: 1, Description: "最近请求间隔的变异系数（标准差/均值）低于此值判定为脚本"},
+				{Key: "min_samples", Label: "规律性最少样本", Type: "int", DefaultValue: 30, Min: 10, Max: 1000, Unit: "次", Description: "至少有这么多次请求才判断间隔规律性"},
+			},
 		},
-		CreatedAt: now.Add(-10 * 24 * time.Hour), UpdatedAt: now.Add(-5 * 24 * time.Hour),
-	}
-	s.rules["R-SSRF-001"] = &Rule{
-		ID: "R-SSRF-001", RequirementFR: "FR-DET-007",
-		Name: "SSRF 服务端请求伪造检测", Category: "注入攻击",
-		Severity: "high", Enabled: true, DefaultScore: 65,
-		Description:    "检测请求参数中包含内网地址、云元数据地址等SSRF特征。旁路模式下检出率≥50%，增强模式需集成VPC流日志。",
-		Recommendation: "检查该接口是否需要对用户输入做URL白名单校验。",
-		Config:         map[string]interface{}{"mode": "basic", "vpc_integration": false},
-		HitCount:       0,
-		Params: []RuleParam{
-			{Key: "internal_nets", Label: "内网IP段", Type: "string", DefaultValue: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16", Description: "匹配到这些网段的请求参数触发告警"},
-			{Key: "metadata_ips", Label: "云元数据IP", Type: "string", DefaultValue: "169.254.169.254,100.100.100.200", Description: "云服务商元数据地址"},
-			{Key: "vpc_integration", Label: "VPC流日志增强", Type: "bool", DefaultValue: false, Description: "开启后结合VPC流日志验证实际出向目的地"},
+		{
+			ID: "R-RATE-001", RequirementFR: "FR-DET-004",
+			Name: "资源消耗异常检测", Category: "可用性",
+			Severity: "medium", Enabled: true, DefaultScore: 70,
+			Description:    "按接口统计每个窗口的请求数，与该接口的历史基线（指数加权平均）比较，超过基线倍数时告警。需要至少 3 个窗口的历史。",
+			Recommendation: "对异常来源实施限流，排查是否遭遇资源耗尽攻击或业务突发。",
+			Params: []RuleParam{
+				{Key: "window_minutes", Label: "统计窗口", Type: "int", DefaultValue: 1, Min: 1, Max: 60, Unit: "分钟", Description: "按此时间窗口统计每个接口的请求数"},
+				{Key: "multiplier", Label: "基线倍数阈值", Type: "float", DefaultValue: 5, Min: 1.5, Max: 100, Unit: "倍", Description: "窗口请求数超过历史基线此倍数时触发"},
+				{Key: "min_requests", Label: "最低请求数", Type: "int", DefaultValue: 300, Min: 10, Max: 10000000, Unit: "次", Description: "窗口请求数低于此值不告警，避免低频接口误报"},
+			},
 		},
-		CreatedAt: now.Add(-20 * 24 * time.Hour), UpdatedAt: now.Add(-10 * 24 * time.Hour),
+		{
+			ID: "R-SSRF-001", RequirementFR: "FR-DET-007",
+			Name: "SSRF 服务端请求伪造检测", Category: "注入攻击",
+			Severity: "high", Enabled: true, DefaultScore: 75,
+			Description:    "检测请求参数中指向内网地址（75 分）、危险协议（85 分）或云元数据地址（95 分）的 URL 和 IP。只匹配字面地址，不做域名解析。",
+			Recommendation: "对该接口的用户输入做 URL 白名单校验，禁止访问内网和元数据地址。",
+			Params: []RuleParam{
+				{Key: "internal_nets", Label: "内网地址段", Type: "string", DefaultValue: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,169.254.0.0/16,::1/128,fc00::/7", Description: "逗号分隔的 CIDR，参数指向这些网段时告警"},
+				{Key: "metadata_hosts", Label: "云元数据地址", Type: "string", DefaultValue: "169.254.169.254,100.100.100.200,metadata.google.internal,metadata.tencentyun.com", Description: "逗号分隔的 IP 或域名"},
+				{Key: "blocked_schemes", Label: "危险协议", Type: "string", DefaultValue: "file,gopher,dict,ftp,ldap,jar", Description: "逗号分隔，参数中出现这些协议的 URL 时告警"},
+			},
+		},
 	}
 }
 
@@ -269,18 +302,128 @@ func (s *RuleService) update(id string, fn func(r *Rule)) (*Rule, error) {
 	return s.rules[id].clone(), nil
 }
 
-func (s *RuleService) UpdateConfig(id string, config map[string]interface{}, params []RuleParam) (*Rule, error) {
+// UpdateConfig sets parameter values. Every key must be a parameter of the
+// rule and every value must fit its type and range; otherwise nothing is
+// changed and an ErrInvalid error names the problem.
+func (s *RuleService) UpdateConfig(id string, config map[string]interface{}) (*Rule, error) {
+	if len(config) == 0 {
+		return nil, fmt.Errorf("%w: 没有要修改的参数", ErrInvalid)
+	}
+	def, err := s.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	values := make(map[string]interface{}, len(config))
+	for key, v := range config {
+		param, ok := def.param(key)
+		if !ok {
+			return nil, fmt.Errorf("%w: 规则 %s 没有参数 %s", ErrInvalid, id, key)
+		}
+		norm, err := param.normalize(v)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %s: %v", ErrInvalid, param.Label, err)
+		}
+		values[key] = norm
+	}
 	return s.update(id, func(r *Rule) {
 		if r.Config == nil {
 			r.Config = make(map[string]interface{})
 		}
-		for k, v := range config {
+		for k, v := range values {
 			r.Config[k] = v
 		}
-		if params != nil {
-			r.Params = params
-		}
 	})
+}
+
+// IsEnabled reports whether rule id exists and is switched on.
+func (s *RuleService) IsEnabled(id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.rules[id]
+	return ok && r.Enabled
+}
+
+// Values returns the effective parameter values of rule id (saved values,
+// else defaults), or nil when the rule does not exist.
+func (s *RuleService) Values(id string) map[string]interface{} {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.rules[id]
+	if !ok {
+		return nil
+	}
+	values := make(map[string]interface{}, len(r.Params))
+	for _, p := range r.Params {
+		values[p.Key] = p.DefaultValue
+		if v, ok := r.Config[p.Key]; ok {
+			values[p.Key] = v
+		}
+	}
+	return values
+}
+
+func (r *Rule) param(key string) (RuleParam, bool) {
+	for _, p := range r.Params {
+		if p.Key == key {
+			return p, true
+		}
+	}
+	return RuleParam{}, false
+}
+
+// maxStringParam bounds string parameters such as endpoint lists.
+const maxStringParam = 4000
+
+// normalize checks v against the parameter's type and range and returns it
+// in canonical form (float64 for numbers).
+func (p RuleParam) normalize(v interface{}) (interface{}, error) {
+	switch p.Type {
+	case "bool":
+		b, ok := v.(bool)
+		if !ok {
+			return nil, fmt.Errorf("应为开关值")
+		}
+		return b, nil
+	case "string":
+		str, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("应为文本")
+		}
+		str = strings.TrimSpace(str)
+		if str == "" {
+			return nil, fmt.Errorf("不能为空")
+		}
+		if len(str) > maxStringParam {
+			return nil, fmt.Errorf("不能超过 %d 个字符", maxStringParam)
+		}
+		return str, nil
+	case "int", "float":
+		var f float64
+		switch n := v.(type) {
+		case float64:
+			f = n
+		case int:
+			f = float64(n)
+		case json.Number:
+			var err error
+			if f, err = n.Float64(); err != nil {
+				return nil, fmt.Errorf("应为数字")
+			}
+		default:
+			return nil, fmt.Errorf("应为数字")
+		}
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, fmt.Errorf("应为数字")
+		}
+		if p.Type == "int" && f != math.Trunc(f) {
+			return nil, fmt.Errorf("应为整数")
+		}
+		if (p.Min != 0 || p.Max != 0) && (f < p.Min || f > p.Max) {
+			return nil, fmt.Errorf("取值范围 %g～%g", p.Min, p.Max)
+		}
+		return f, nil
+	}
+	return nil, fmt.Errorf("不支持的参数类型 %s", p.Type)
 }
 
 func (s *RuleService) UpdateEnabled(id string, enabled bool) (*Rule, error) {

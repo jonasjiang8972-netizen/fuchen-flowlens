@@ -10,6 +10,9 @@ import (
 // ErrNotFound is wrapped by service errors for records that do not exist.
 var ErrNotFound = errors.New("not found")
 
+// ErrInvalid wraps input the service rejects; its message is safe to show.
+var ErrInvalid = errors.New("invalid input")
+
 // Document kinds persisted through a Repository.
 const (
 	KindAsset = "asset"

@@ -67,7 +67,7 @@ func TestRulesDefaultsSavedAndChangesSurviveReload(t *testing.T) {
 	if _, err := s.UpdateEnabled("R-BOLA-001", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateConfig("R-BOLA-001", map[string]interface{}{"traverse_threshold": 42}, nil); err != nil {
+	if _, err := s.UpdateConfig("R-BOLA-001", map[string]interface{}{"traverse_threshold": 42}); err != nil {
 		t.Fatal(err)
 	}
 

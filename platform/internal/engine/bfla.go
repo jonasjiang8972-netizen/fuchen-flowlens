@@ -17,36 +17,70 @@ type BFLAEngine struct {
 	roleMatrix map[string]map[string]int
 	now        func() time.Time
 	events     *cooldown
+
+	adminPrefixes   []string
+	privilegedRoles map[string]bool
+	minBaseline     int
+	rareShare       float64
+	strict          bool
 }
 
+// BFLA defaults, matching rule R-BFLA-001.
+const (
+	bflaDefaultAdminEndpoints  = "/admin,/api/v1/admin,/api/v1/system,/api/v1/users/roles,/manage,/supervisor,/actuator,/swagger-ui,/api/v1/audit"
+	bflaDefaultPrivilegedRoles = "admin,administrator,super_admin,superadmin,root,sysadmin,system_admin,security_admin"
+	bflaDefaultMinBaseline     = 10
+	bflaDefaultRareShare       = 0.05
+)
+
 func NewBFLAEngine(store storage.Store) *BFLAEngine {
-	return &BFLAEngine{
+	e := &BFLAEngine{
 		store:      store,
 		roleMatrix: make(map[string]map[string]int),
 		now:        time.Now,
 		events:     newCooldown(),
 	}
+	e.Configure(nil)
+	return e
 }
 
-var adminEndpoints = []string{
-	"/admin", "/api/v1/admin", "/api/v1/system",
-	"/api/v1/users/roles", "/manage", "/supervisor",
-	"/actuator", "/swagger-ui", "/api/v1/audit",
+// Configure applies rule R-BFLA-001's parameters: admin_endpoints and
+// privileged_roles (comma-separated), min_baseline (accesses an endpoint
+// needs before role shares count), rare_share (share under which a role is
+// flagged) and strict_mode (flag every non-privileged access).
+func (e *BFLAEngine) Configure(p Params) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.adminPrefixes = nil
+	for _, prefix := range p.List("admin_endpoints", bflaDefaultAdminEndpoints) {
+		e.adminPrefixes = append(e.adminPrefixes, strings.TrimRight(prefix, "/"))
+	}
+	e.privilegedRoles = make(map[string]bool)
+	for _, role := range p.List("privileged_roles", bflaDefaultPrivilegedRoles) {
+		e.privilegedRoles[strings.ToLower(role)] = true
+	}
+	if e.minBaseline = p.Int("min_baseline", bflaDefaultMinBaseline); e.minBaseline < 1 {
+		e.minBaseline = bflaDefaultMinBaseline
+	}
+	if e.rareShare = p.Float("rare_share", bflaDefaultRareShare); e.rareShare <= 0 || e.rareShare >= 1 {
+		e.rareShare = bflaDefaultRareShare
+	}
+	e.strict = p.Bool("strict_mode", false)
 }
 
-// privilegedRoles are expected to use management endpoints and are never
-// flagged by BFLA.
-var privilegedRoles = map[string]bool{
-	"admin": true, "administrator": true, "super_admin": true, "superadmin": true,
-	"root": true, "sysadmin": true, "system_admin": true, "security_admin": true,
+// IsAdminEndpoint reports whether endpoint is under a configured management
+// prefix (whole path segments only).
+func (e *BFLAEngine) IsAdminEndpoint(endpoint string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.isAdminLocked(endpoint)
 }
 
-// bflaMinBaseline is the number of recorded accesses an endpoint needs before
-// the per-role share is meaningful.
-const bflaMinBaseline = 10
-
-func isAdminEndpoint(endpoint string) bool {
-	for _, prefix := range adminEndpoints {
+func (e *BFLAEngine) isAdminLocked(endpoint string) bool {
+	for _, prefix := range e.adminPrefixes {
+		if prefix == "" {
+			continue
+		}
 		if endpoint == prefix || strings.HasPrefix(endpoint, prefix+"/") {
 			return true
 		}
@@ -65,14 +99,14 @@ func (e *BFLAEngine) RecordAccess(accountID, role, endpoint string) {
 }
 
 // Evaluate flags a non-privileged role on a management endpoint when the
-// endpoint has no baseline yet, or when that role makes up under 5% of its
-// historical traffic.
+// endpoint has too little history (under min_baseline accesses), when the
+// role's share of its traffic is under rare_share, or always in strict mode.
 func (e *BFLAEngine) Evaluate(accountID, role, endpoint string) (int, string) {
-	if !isAdminEndpoint(endpoint) || privilegedRoles[strings.ToLower(role)] {
+	e.mu.RLock()
+	if !e.isAdminLocked(endpoint) || e.privilegedRoles[strings.ToLower(role)] {
+		e.mu.RUnlock()
 		return 0, ""
 	}
-
-	e.mu.RLock()
 	roleAccess, ok := e.roleMatrix[endpoint]
 	if !ok {
 		e.mu.RUnlock()
@@ -83,14 +117,17 @@ func (e *BFLAEngine) Evaluate(accountID, role, endpoint string) (int, string) {
 		totalAccess += count
 	}
 	currentRoleAccess := roleAccess[role]
+	minBaseline, rareShare, strict := e.minBaseline, e.rareShare, e.strict
 	e.mu.RUnlock()
 
 	share := float64(currentRoleAccess) / float64(totalAccess)
 	var reason string
 	switch {
-	case totalAccess < bflaMinBaseline:
+	case strict:
+		reason = fmt.Sprintf("BFLA 检测: 角色 %s 访问管理端点 %s（严格模式）", role, endpoint)
+	case totalAccess < minBaseline:
 		reason = fmt.Sprintf("BFLA 检测: 角色 %s 访问管理端点 %s (基线不足: 仅 %d 次历史访问)", role, endpoint, totalAccess)
-	case share < 0.05:
+	case share < rareShare:
 		reason = fmt.Sprintf("BFLA 检测: 角色 %s 异常访问管理端点 %s (历史占比: %.1f%%)", role, endpoint, share*100)
 	default:
 		return 0, ""
