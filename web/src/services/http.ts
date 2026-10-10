@@ -19,7 +19,7 @@ export class ApiError extends Error {
 
 // Session events let the app shell react to expiry or a forced password
 // change wherever a request happens.
-export type SessionEvent = 'expired' | 'password-change-required'
+export type SessionEvent = 'expired' | 'password-change-required' | 'mfa-enrollment-required'
 const listeners = new Set<(e: SessionEvent) => void>()
 export function onSessionEvent(fn: (e: SessionEvent) => void) {
   listeners.add(fn)
@@ -50,6 +50,7 @@ export async function request<T>(url: string, options: RequestInit = {}): Promis
     const code = body && body.code
     if (resp.status === 401 && !url.startsWith('/auth/login')) emit('expired')
     if (resp.status === 403 && code === 'password_change_required') emit('password-change-required')
+    if (resp.status === 403 && code === 'mfa_enrollment_required') emit('mfa-enrollment-required')
     throw new ApiError(resp.status, message, code)
   }
   return body as T

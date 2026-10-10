@@ -117,16 +117,39 @@ func (s *PlatformServer) LoginHandler(c *gin.Context) {
 		return
 	}
 	res, err := s.iam.Login(c.Request.Context(), req.Username, req.Password, c.ClientIP(), c.GetHeader("User-Agent"))
+	s.respondLogin(c, res, err)
+}
+
+// LoginMFAHandler completes a login with the authenticator code.
+func (s *PlatformServer) LoginMFAHandler(c *gin.Context) {
+	var req struct {
+		MFAToken string `json:"mfa_token"`
+		Code     string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || req.MFAToken == "" || req.Code == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入动态验证码"})
+		return
+	}
+	res, err := s.iam.LoginTOTP(c.Request.Context(), req.MFAToken, req.Code, c.ClientIP(), c.GetHeader("User-Agent"))
+	s.respondLogin(c, res, err)
+}
+
+func (s *PlatformServer) respondLogin(c *gin.Context, res *iam.LoginResult, err error) {
 	switch {
 	case errors.Is(err, iam.ErrRateLimited):
 		c.JSON(http.StatusTooManyRequests, gin.H{"error": err.Error()})
 		return
 	case errors.Is(err, iam.ErrBadCredentials), errors.Is(err, iam.ErrAccountLocked),
-		errors.Is(err, iam.ErrAccountDisabled), errors.Is(err, iam.ErrAccountExpired):
+		errors.Is(err, iam.ErrAccountDisabled), errors.Is(err, iam.ErrAccountExpired),
+		errors.Is(err, iam.ErrMFACode), errors.Is(err, iam.ErrMFAChallenge):
 		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 		return
 	case err != nil:
 		respondErr(c, err)
+		return
+	}
+	if res.MFARequired {
+		c.JSON(http.StatusOK, gin.H{"mfa_required": true, "mfa_token": res.MFAToken})
 		return
 	}
 	s.setSessionCookie(c, res.Token, int(time.Until(res.ExpiresAt).Seconds()))
@@ -154,7 +177,7 @@ func (s *PlatformServer) MeHandler(c *gin.Context) {
 	p := auth.Principal(c)
 	if p.UserID == "demo" {
 		c.JSON(http.StatusOK, gin.H{"user": gin.H{"username": "demo", "display_name": p.DisplayName, "role": p.Role},
-			"console": iam.ConsoleSecurity, "permissions": iam.PermissionsOf(p.Role), "must_change_password": false})
+			"console": iam.ConsoleSecurity, "permissions": iam.PermissionsOf(p.Role), "must_change_password": false, "must_enroll_mfa": false})
 		return
 	}
 	me, err := s.iam.Me(c.Request.Context(), p)
@@ -163,7 +186,52 @@ func (s *PlatformServer) MeHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": me, "console": iam.ConsoleOf(p.Role), "permissions": iam.PermissionsOf(p.Role),
-		"must_change_password": p.MustChangePassword, "policy": s.iam.Policy(c.Request.Context())})
+		"must_change_password": p.MustChangePassword, "must_enroll_mfa": p.MustEnrollMFA, "policy": s.iam.Policy(c.Request.Context())})
+}
+
+// ─── Two-factor authentication (own account) ───────────────────
+
+func (s *PlatformServer) MFASetupHandler(c *gin.Context) {
+	c.Set(auth.AuditedKey, true)
+	setup, err := s.iam.SetupMFA(c.Request.Context(), auth.Principal(c))
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, setup)
+}
+
+func (s *PlatformServer) MFAEnableHandler(c *gin.Context) {
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误"})
+		return
+	}
+	c.Set(auth.AuditedKey, true)
+	if err := s.iam.EnableMFA(c.Request.Context(), auth.Principal(c), req.Code); err != nil {
+		respondErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (s *PlatformServer) MFADisableHandler(c *gin.Context) {
+	var req struct {
+		Password string `json:"password"`
+		Code     string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误"})
+		return
+	}
+	c.Set(auth.AuditedKey, true)
+	if err := s.iam.DisableMFA(c.Request.Context(), auth.Principal(c), req.Password, req.Code); err != nil {
+		respondErr(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 func (s *PlatformServer) ChangePasswordHandler(c *gin.Context) {
@@ -247,6 +315,8 @@ func (s *PlatformServer) UserActionHandler(c *gin.Context) {
 			return
 		}
 		u, err = s.iam.ResetPassword(ctx, actor, id, req.Password)
+	case "reset-mfa":
+		u, err = s.iam.ResetMFA(ctx, actor, id)
 	default:
 		c.Set(auth.AuditedKey, false)
 		c.JSON(http.StatusNotFound, gin.H{"error": "未知操作"})

@@ -21,6 +21,9 @@ type Policy struct {
 	AccountInactiveDays  int `json:"account_inactive_days"`    // disable after no login, 0 = off
 	AuditRetentionDays   int `json:"audit_retention_days"`     // >= 180 (网络安全法: >= 6 months)
 	LoginRatePerIPMinute int `json:"login_rate_per_ip_minute"` // login attempts per source IP per minute
+	// MFARequiredForAdmins makes the system, audit and security
+	// administrators enroll a TOTP authenticator before they can operate.
+	MFARequiredForAdmins bool `json:"mfa_required_admins"`
 }
 
 func DefaultPolicy() Policy {

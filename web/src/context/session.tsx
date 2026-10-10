@@ -4,7 +4,7 @@ import { DEMO, onSessionEvent } from '../services/http'
 import { authService, demoSession } from '../services/auth'
 import type { Permission, Role, Session } from '../services/auth'
 
-type Status = 'loading' | 'anonymous' | 'must-change' | 'ready'
+type Status = 'loading' | 'anonymous' | 'must-change' | 'must-enroll' | 'ready'
 
 interface SessionContextValue {
   status: Status
@@ -12,7 +12,10 @@ interface SessionContextValue {
   // Why the user was returned to the login page, e.g. idle timeout.
   notice: string
   can: (p: Permission) => boolean
-  login: (username: string, password: string) => Promise<void>
+  // Resolves to the second-factor token when the account has MFA on;
+  // completeMfaLogin then finishes the login with the code.
+  login: (username: string, password: string) => Promise<string | null>
+  completeMfaLogin: (mfaToken: string, code: string) => Promise<void>
   logout: () => Promise<void>
   refresh: () => Promise<void>
   // Demo build only: switch the simulated identity.
@@ -30,7 +33,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const apply = useCallback((s: Session | null) => {
     setSession(s)
-    setStatus(!s ? 'anonymous' : s.must_change_password ? 'must-change' : 'ready')
+    setStatus(!s ? 'anonymous' : s.must_change_password ? 'must-change' : s.must_enroll_mfa || s.user.must_enroll_mfa ? 'must-enroll' : 'ready')
   }, [])
 
   const refresh = useCallback(async () => {
@@ -51,17 +54,27 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (e === 'expired') {
       // Only a session that existed can expire; a 401 while signed out
       // (e.g. the initial session probe) is not news to the user.
-      if (statusRef.current === 'ready' || statusRef.current === 'must-change') {
+      if (statusRef.current === 'ready' || statusRef.current === 'must-change' || statusRef.current === 'must-enroll') {
         setNotice('会话已超时或已在其他地方退出，请重新登录')
         apply(null)
       }
     } else if (e === 'password-change-required') {
       setStatus('must-change')
+    } else if (e === 'mfa-enrollment-required') {
+      setStatus('must-enroll')
     }
   }), [apply])
 
   const login = useCallback(async (username: string, password: string) => {
     const res = await authService.login(username, password)
+    if (res.mfa_required) return res.mfa_token
+    setNotice('')
+    apply(res)
+    return null
+  }, [apply])
+
+  const completeMfaLogin = useCallback(async (mfaToken: string, code: string) => {
+    const res = await authService.loginMfa(mfaToken, code)
     setNotice('')
     apply(res)
   }, [apply])
@@ -78,7 +91,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const switchDemoRole = useCallback((role: Role) => { if (DEMO) apply(demoSession(role)) }, [apply])
 
   return (
-    <SessionContext.Provider value={{ status, session, notice, can, login, logout, refresh, switchDemoRole }}>
+    <SessionContext.Provider value={{ status, session, notice, can, login, completeMfaLogin, logout, refresh, switchDemoRole }}>
       {children}
     </SessionContext.Provider>
   )

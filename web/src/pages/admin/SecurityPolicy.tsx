@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Form, InputNumber, Space, message } from 'antd'
+import { Alert, Button, Card, Form, InputNumber, Space, Switch, message } from 'antd'
 import { adminService } from '../../services/admin'
 import type { Policy } from '../../services/auth'
 import { DEMO, errorMessage } from '../../services/http'
@@ -99,6 +99,12 @@ export default function SecurityPolicy() {
               ))}
             </Card>
           ))}
+          <Card title="双因素认证" extra={<span className="muted" style={{ fontSize: 12 }}>GB/T 22239-2019 8.1.4.1 d）</span>}>
+            <Form.Item name="mfa_required_admins" label="管理员必须启用" valuePropName="checked"
+              extra="开启后，系统管理员、审计管理员、安全管理员登录时须输入口令和手机身份验证器（TOTP）上的动态验证码；未绑定的管理员下次登录须先绑定，绑定前不能操作。开启前请先在左下角“账号安全”中为自己绑定。其他角色可自愿启用。">
+              <Switch />
+            </Form.Item>
+          </Card>
         </div>
       </Form>
     </div>

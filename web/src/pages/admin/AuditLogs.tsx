@@ -9,6 +9,7 @@ import { DEMO, errorMessage } from '../../services/http'
 
 export const eventLabels: Record<string, string> = {
   'auth.login': '登录', 'auth.logout': '退出登录', 'auth.password_change': '修改口令',
+  'auth.mfa_setup': '生成双因素绑定二维码', 'auth.mfa_enable': '启用双因素认证', 'auth.mfa_disable': '关闭双因素认证', 'user.reset_mfa': '重置双因素认证',
   'user.create': '新建账号', 'user.update': '修改账号', 'user.delete': '删除账号', 'user.enable': '启用账号',
   'user.disable': '停用账号', 'user.unlock': '解锁账号', 'user.lock': '账号锁定', 'user.reset_password': '重置口令',
   'user.auto_disable': '长期未登录自动停用', 'user.bootstrap': '创建初始账号',

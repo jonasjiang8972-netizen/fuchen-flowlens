@@ -102,7 +102,7 @@ export const adminService = {
   users: () => (DEMO ? Promise.resolve(demoUsers()) : request<{ items: UserView[] }>('/admin/users').then(r => r.items)),
   createUser: (in_: UserInput) => request<UserView>('/admin/users', { method: 'POST', body: JSON.stringify(in_) }),
   updateUser: (id: string, in_: UserInput) => request<UserView>(`/admin/users/${id}`, { method: 'PUT', body: JSON.stringify(in_) }),
-  userAction: (id: string, action: 'enable' | 'disable' | 'unlock') =>
+  userAction: (id: string, action: 'enable' | 'disable' | 'unlock' | 'reset-mfa') =>
     request<UserView>(`/admin/users/${id}/${action}`, { method: 'POST', body: '{}' }),
   resetPassword: (id: string, password: string) =>
     request<UserView>(`/admin/users/${id}/reset-password`, { method: 'POST', body: JSON.stringify({ password }) }),

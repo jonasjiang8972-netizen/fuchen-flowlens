@@ -18,6 +18,8 @@ export interface UserView {
   locked: boolean
   locked_until?: string
   must_change_password: boolean
+  mfa_enabled?: boolean
+  must_enroll_mfa?: boolean
   password_changed_at: string
   last_login_at?: string
   last_login_ip: string
@@ -38,6 +40,7 @@ export interface Policy {
   account_inactive_days: number
   audit_retention_days: number
   login_rate_per_ip_minute: number
+  mfa_required_admins?: boolean
 }
 
 export interface Session {
@@ -45,7 +48,17 @@ export interface Session {
   console: Console
   permissions: Permission[]
   must_change_password: boolean
+  must_enroll_mfa?: boolean
   policy?: Policy
+}
+
+// The password step either opens a session or, with two-factor
+// authentication on, asks for the authenticator code.
+export type LoginResponse = (Session & { expires_at: string; mfa_required?: false }) | { mfa_required: true; mfa_token: string }
+
+export interface MFASetup {
+  secret: string
+  otpauth_uri: string
 }
 
 export const ROLE_NAMES: Record<Role, string> = {
@@ -83,7 +96,13 @@ export function demoSession(role: Role): Session {
 
 export const authService = {
   login: (username: string, password: string) =>
-    request<Session & { expires_at: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+    request<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
+  loginMfa: (mfaToken: string, code: string) =>
+    request<Session & { expires_at: string }>('/auth/login/mfa', { method: 'POST', body: JSON.stringify({ mfa_token: mfaToken, code }) }),
+  mfaSetup: () => request<MFASetup>('/auth/mfa/setup', { method: 'POST' }),
+  mfaEnable: (code: string) => request('/auth/mfa/enable', { method: 'POST', body: JSON.stringify({ code }) }),
+  mfaDisable: (password: string, code: string) =>
+    request('/auth/mfa/disable', { method: 'POST', body: JSON.stringify({ password, code }) }),
   me: () => request<Session>('/auth/me'),
   logout: () => (DEMO ? Promise.resolve() : request('/auth/logout', { method: 'POST' })),
   changePassword: (oldPassword: string, newPassword: string) =>

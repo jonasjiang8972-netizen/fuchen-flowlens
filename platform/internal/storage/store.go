@@ -41,6 +41,11 @@ type User struct {
 	CreatedBy          string     `json:"created_by"`
 	CreatedAt          time.Time  `json:"created_at"`
 	UpdatedAt          time.Time  `json:"updated_at"`
+	// Two-factor authentication (TOTP, RFC 6238).
+	TOTPEnabled  bool   `json:"totp_enabled"`
+	TOTPSecret   string `json:"-"` // base32, set once enrollment is confirmed
+	TOTPPending  string `json:"-"` // secret being enrolled, not yet confirmed
+	TOTPLastStep int64  `json:"-"` // last accepted time step, against replay
 }
 
 // Session is a server-side login session. Only the SM3 hash of the bearer

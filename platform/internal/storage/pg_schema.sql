@@ -19,8 +19,17 @@ CREATE TABLE IF NOT EXISTS fl_users (
     expires_at           TIMESTAMPTZ,
     created_by           TEXT NOT NULL DEFAULT '',
     created_at           TIMESTAMPTZ NOT NULL,
-    updated_at           TIMESTAMPTZ NOT NULL
+    updated_at           TIMESTAMPTZ NOT NULL,
+    totp_enabled         BOOLEAN NOT NULL DEFAULT FALSE,
+    totp_secret          TEXT NOT NULL DEFAULT '',
+    totp_pending         TEXT NOT NULL DEFAULT '',
+    totp_last_step       BIGINT NOT NULL DEFAULT 0
 );
+-- Added in 0.7.0 (two-factor authentication) to tables created earlier.
+ALTER TABLE fl_users ADD COLUMN IF NOT EXISTS totp_enabled   BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE fl_users ADD COLUMN IF NOT EXISTS totp_secret    TEXT NOT NULL DEFAULT '';
+ALTER TABLE fl_users ADD COLUMN IF NOT EXISTS totp_pending   TEXT NOT NULL DEFAULT '';
+ALTER TABLE fl_users ADD COLUMN IF NOT EXISTS totp_last_step BIGINT NOT NULL DEFAULT 0;
 CREATE UNIQUE INDEX IF NOT EXISTS fl_users_username_uq ON fl_users (lower(username));
 
 CREATE TABLE IF NOT EXISTS fl_sessions (

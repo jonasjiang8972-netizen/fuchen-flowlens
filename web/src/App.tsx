@@ -2,6 +2,7 @@ import { Spin } from 'antd'
 import { SessionProvider, useSession } from './context/session'
 import Login from './pages/Login'
 import ChangePassword from './pages/ChangePassword'
+import EnrollMFA from './pages/EnrollMFA'
 import SecurityConsole from './consoles/SecurityConsole'
 import AdminConsole from './consoles/AdminConsole'
 
@@ -13,6 +14,7 @@ function Root() {
   if (status === 'loading') return <div className="flow-page-loading" style={{ minHeight: '100vh' }}><Spin size="large" /></div>
   if (status === 'anonymous' || !session) return <Login />
   if (status === 'must-change') return <ChangePassword />
+  if (status === 'must-enroll') return <EnrollMFA />
   return session.console === 'admin' ? <AdminConsole /> : <SecurityConsole />
 }
 

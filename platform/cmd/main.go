@@ -209,6 +209,7 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	public := r.Group("/api/v1")
 	public.GET("/health", srv.HealthHandler)
 	public.POST("/auth/login", srv.LoginHandler)
+	public.POST("/auth/login/mfa", srv.LoginMFAHandler)
 
 	// Own account: available to every signed-in operator, including one
 	// that still has to change its password.
@@ -216,6 +217,9 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	account.GET("/me", srv.MeHandler)
 	account.POST("/logout", srv.LogoutHandler)
 	account.POST("/password", srv.ChangePasswordHandler)
+	account.POST("/mfa/setup", srv.MFASetupHandler)
+	account.POST("/mfa/enable", srv.MFAEnableHandler)
+	account.POST("/mfa/disable", srv.MFADisableHandler)
 
 	// Collector endpoints authenticate with the agent token (and a verified
 	// client certificate when a client CA is configured).

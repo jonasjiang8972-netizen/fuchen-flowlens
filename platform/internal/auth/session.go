@@ -88,6 +88,8 @@ func RequirePermission(auditSvc *audit.Service, console string, perm iam.Permiss
 		code, msg := "forbidden", iam.ErrForbidden.Error()
 		if p != nil && p.MustChangePassword {
 			code, msg = "password_change_required", iam.ErrPasswordRequired.Error()
+		} else if p != nil && p.MustEnrollMFA {
+			code, msg = "mfa_enrollment_required", iam.ErrMFARequired.Error()
 		}
 		rec := storage.AuditRecord{Console: console, EventType: "access.denied", Target: c.FullPath(),
 			Result: audit.ResultFailure, Reason: "缺少权限 " + string(perm), Method: c.Request.Method, Path: c.Request.URL.Path}

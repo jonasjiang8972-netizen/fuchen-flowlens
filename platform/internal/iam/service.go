@@ -32,6 +32,9 @@ var (
 	ErrSessionInvalid   = errors.New("会话无效或已过期，请重新登录")
 	ErrForbidden        = errors.New("没有执行该操作的权限")
 	ErrPasswordRequired = errors.New("口令已过期或为初始口令，请先修改口令")
+	ErrMFARequired      = errors.New("安全策略要求启用双因素认证，请先绑定身份验证器")
+	ErrMFAChallenge     = errors.New("登录验证已失效，请重新输入用户名和口令")
+	ErrMFACode          = errors.New("动态验证码错误")
 )
 
 // ValidationError carries a user-facing message for a rejected request.
@@ -48,6 +51,7 @@ type Principal struct {
 	DisplayName        string `json:"display_name"`
 	Role               Role   `json:"role"`
 	MustChangePassword bool   `json:"must_change_password"`
+	MustEnrollMFA      bool   `json:"must_enroll_mfa"`
 	SourceIP           string `json:"-"`
 	sessionHash        string
 	demo               bool
@@ -60,12 +64,13 @@ func DemoPrincipal() *Principal {
 }
 
 // Can reports whether the principal holds permission p. A principal that
-// must change its password holds no permissions until it does.
+// must change its password, or enroll a second factor the policy requires,
+// holds no permissions until it does.
 func (p *Principal) Can(perm Permission) bool {
 	if p != nil && p.demo {
 		return true
 	}
-	return p != nil && !p.MustChangePassword && Can(p.Role, perm)
+	return p != nil && !p.MustChangePassword && !p.MustEnrollMFA && Can(p.Role, perm)
 }
 
 // AuditActor fills the actor fields of an audit record.
@@ -86,6 +91,7 @@ type Service struct {
 	now     func() time.Time
 
 	mu         sync.Mutex
+	challenges map[string]*mfaChallenge // SM3(token) -> pending second-factor login
 	policy     Policy
 	policyAt   time.Time
 	dummyHash  []byte
@@ -97,6 +103,7 @@ func NewService(store storage.IdentityStore, auditSvc *audit.Service) *Service {
 		store:      store,
 		audit:      auditSvc,
 		limiter:    newIPLimiter(),
+		challenges: map[string]*mfaChallenge{},
 		now:        time.Now,
 		bcryptCost: bcrypt.DefaultCost,
 	}
@@ -130,6 +137,14 @@ func (s *Service) UpdatePolicy(ctx context.Context, actor *Principal, p Policy) 
 		return &ValidationError{Msg: err.Error()}
 	}
 	old := s.Policy(ctx)
+	if p.MFARequiredForAdmins && !old.MFARequiredForAdmins && actor != nil && !actor.demo {
+		// Whoever turns the requirement on must not lock themselves out.
+		if u, err := s.store.GetUserByID(ctx, actor.UserID); err == nil && !u.TOTPEnabled {
+			msg := "请先在“账号安全”中为自己启用双因素认证，再开启该要求"
+			s.record(ctx, actor, "policy.update", "security_policy", audit.ResultFailure, msg, "")
+			return &ValidationError{Msg: msg}
+		}
+	}
 	raw, _ := json.Marshal(p)
 	if err := s.store.PutSetting(ctx, policySettingKey, raw); err != nil {
 		return err
@@ -193,6 +208,10 @@ func (s *Service) Bootstrap(ctx context.Context, initialPassword string) (*Boots
 // ─── Login / sessions ──────────────────────────────────────────
 
 type LoginResult struct {
+	// MFARequired means the password was right and the account has a second
+	// factor: the client sends the code with MFAToken to LoginTOTP.
+	MFARequired        bool         `json:"mfa_required,omitempty"`
+	MFAToken           string       `json:"mfa_token,omitempty"`
 	Token              string       `json:"-"`
 	ExpiresAt          time.Time    `json:"expires_at"`
 	User               UserView     `json:"user"`
@@ -250,22 +269,42 @@ func (s *Service) Login(ctx context.Context, username, password, ip, userAgent s
 	}
 
 	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
-		u.FailedAttempts++
-		reason := fmt.Sprintf("口令错误（连续第 %d 次）", u.FailedAttempts)
-		if u.FailedAttempts >= pol.LockoutThreshold {
-			until := now.Add(time.Duration(pol.LockoutMinutes) * time.Minute)
-			u.LockedUntil, u.FailedAttempts = &until, 0
-			reason += "，账号已锁定"
-			s.record(ctx, nil, "user.lock", u.Username, audit.ResultSuccess, "", fmt.Sprintf("连续 %d 次登录失败，锁定至 %s", pol.LockoutThreshold, until.Format(time.RFC3339)))
-		}
-		u.UpdatedAt = now
-		if err := s.store.UpdateUser(ctx, u); err != nil {
+		reason, err := s.countFailure(ctx, u, pol, now, "口令错误")
+		if err != nil {
 			return nil, err
 		}
 		return fail(u, reason, ErrBadCredentials)
 	}
 
-	// Success
+	if u.TOTPEnabled {
+		// The failure counter is reset only once the second factor passes.
+		token := randomToken()
+		s.mu.Lock()
+		s.pruneChallengesLocked(now)
+		s.challenges[HashToken(token)] = &mfaChallenge{userID: u.ID, ip: ip, userAgent: userAgent, expires: now.Add(mfaChallengeTTL)}
+		s.mu.Unlock()
+		return &LoginResult{MFARequired: true, MFAToken: token}, nil
+	}
+	return s.finishLogin(ctx, u, pol, now, ip, userAgent, "")
+}
+
+// countFailure records a failed credential check, locking the account at
+// the policy threshold, and returns the audit reason.
+func (s *Service) countFailure(ctx context.Context, u *storage.User, pol Policy, now time.Time, what string) (string, error) {
+	u.FailedAttempts++
+	reason := fmt.Sprintf("%s（连续第 %d 次）", what, u.FailedAttempts)
+	if u.FailedAttempts >= pol.LockoutThreshold {
+		until := now.Add(time.Duration(pol.LockoutMinutes) * time.Minute)
+		u.LockedUntil, u.FailedAttempts = &until, 0
+		reason += "，账号已锁定"
+		s.record(ctx, nil, "user.lock", u.Username, audit.ResultSuccess, "", fmt.Sprintf("连续 %d 次登录失败，锁定至 %s", pol.LockoutThreshold, until.Format(time.RFC3339)))
+	}
+	u.UpdatedAt = now
+	return reason, s.store.UpdateUser(ctx, u)
+}
+
+// finishLogin opens a session for an account whose credentials passed.
+func (s *Service) finishLogin(ctx context.Context, u *storage.User, pol Policy, now time.Time, ip, userAgent, factor string) (*LoginResult, error) {
 	u.FailedAttempts, u.LockedUntil = 0, nil
 	u.LastLoginAt, u.LastLoginIP, u.UpdatedAt = &now, ip, now
 	if now.Sub(u.PasswordChangedAt) > time.Duration(pol.PasswordMaxAgeDays)*24*time.Hour {
@@ -283,13 +322,18 @@ func (s *Service) Login(ctx context.Context, username, password, ip, userAgent s
 		return nil, err
 	}
 	detail := "进入" + map[Console]string{ConsoleAdmin: "系统管理后台", ConsoleSecurity: "API 安全管理平台"}[ConsoleOf(Role(u.Role))]
+	if factor != "" {
+		detail = factor + "；" + detail
+	}
 	if u.MustChangePassword {
 		detail += "；须修改口令后才能操作"
+	} else if mustEnroll(pol, u) {
+		detail += "；须绑定双因素认证后才能操作"
 	}
 	_ = s.audit.Record(ctx, storage.AuditRecord{UserID: u.ID, Username: u.Username, Role: u.Role, SourceIP: ip,
 		Console: "auth", EventType: "auth.login", Target: u.Username, Result: audit.ResultSuccess, Detail: detail})
 	return &LoginResult{
-		Token: token, ExpiresAt: sess.ExpiresAt, User: viewOf(u), Console: ConsoleOf(Role(u.Role)),
+		Token: token, ExpiresAt: sess.ExpiresAt, User: s.viewWithPolicy(u, pol), Console: ConsoleOf(Role(u.Role)),
 		MustChangePassword: u.MustChangePassword, Permissions: PermissionsOf(Role(u.Role)),
 	}, nil
 }
@@ -330,7 +374,7 @@ func (s *Service) Authenticate(ctx context.Context, token, ip string) (*Principa
 	}
 	return &Principal{
 		UserID: u.ID, Username: u.Username, DisplayName: u.DisplayName, Role: Role(u.Role),
-		MustChangePassword: u.MustChangePassword, SourceIP: ip, sessionHash: h,
+		MustChangePassword: u.MustChangePassword, MustEnrollMFA: mustEnroll(pol, u), SourceIP: ip, sessionHash: h,
 	}, nil
 }
 
@@ -411,6 +455,8 @@ type UserView struct {
 	Locked             bool       `json:"locked"`
 	LockedUntil        *time.Time `json:"locked_until,omitempty"`
 	MustChangePassword bool       `json:"must_change_password"`
+	MFAEnabled         bool       `json:"mfa_enabled"`
+	MustEnrollMFA      bool       `json:"must_enroll_mfa"`
 	PasswordChangedAt  time.Time  `json:"password_changed_at"`
 	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
 	LastLoginIP        string     `json:"last_login_ip"`
@@ -434,9 +480,16 @@ func viewOf(u *storage.User) UserView {
 		ID: u.ID, Username: u.Username, DisplayName: u.DisplayName, Email: u.Email,
 		Role: Role(u.Role), RoleName: roleName(Role(u.Role)), Console: ConsoleOf(Role(u.Role)),
 		Status: u.Status, Locked: locked, LockedUntil: u.LockedUntil, MustChangePassword: u.MustChangePassword,
-		PasswordChangedAt: u.PasswordChangedAt, LastLoginAt: u.LastLoginAt, LastLoginIP: u.LastLoginIP,
+		MFAEnabled: u.TOTPEnabled, PasswordChangedAt: u.PasswordChangedAt, LastLoginAt: u.LastLoginAt, LastLoginIP: u.LastLoginIP,
 		ExpiresAt: u.ExpiresAt, CreatedBy: u.CreatedBy, CreatedAt: u.CreatedAt,
 	}
+}
+
+// viewWithPolicy is viewOf plus the policy-dependent fields.
+func (s *Service) viewWithPolicy(u *storage.User, pol Policy) UserView {
+	v := viewOf(u)
+	v.MustEnrollMFA = mustEnroll(pol, u)
+	return v
 }
 
 func (s *Service) ListUsers(ctx context.Context) ([]UserView, error) {
@@ -444,9 +497,10 @@ func (s *Service) ListUsers(ctx context.Context) ([]UserView, error) {
 	if err != nil {
 		return nil, err
 	}
+	pol := s.Policy(ctx)
 	out := make([]UserView, 0, len(users))
 	for i := range users {
-		out = append(out, viewOf(&users[i]))
+		out = append(out, s.viewWithPolicy(&users[i], pol))
 	}
 	return out, nil
 }
@@ -457,7 +511,7 @@ func (s *Service) Me(ctx context.Context, p *Principal) (UserView, error) {
 	if err != nil {
 		return UserView{}, err
 	}
-	return viewOf(u), nil
+	return s.viewWithPolicy(u, s.Policy(ctx)), nil
 }
 
 type UserInput struct {

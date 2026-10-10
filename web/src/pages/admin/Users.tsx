@@ -125,6 +125,7 @@ export default function Users() {
       {u.status === 'disabled' ? <Tag color="default">已停用</Tag> : <Tag color="success">启用</Tag>}
       {u.locked && <Tooltip title={`锁定至 ${fmt(u.locked_until)}`}><Tag color="error">已锁定</Tag></Tooltip>}
       {u.must_change_password && <Tag color="warning">须改口令</Tag>}
+      {u.mfa_enabled ? <Tag color="blue">双因素</Tag> : u.must_enroll_mfa && <Tooltip title="安全策略要求该角色启用双因素认证，下次登录时须先绑定"><Tag color="warning">待绑定双因素</Tag></Tooltip>}
       {u.expires_at && dayjs(u.expires_at).isBefore(dayjs()) && <Tag color="default">已过期</Tag>}
     </Space>
   )
@@ -158,6 +159,12 @@ export default function Users() {
             <Button type="link" size="small" onClick={() => openEdit(u)}>编辑</Button>
             <Button type="link" size="small" disabled={self} onClick={() => openReset(u)}>重置口令</Button>
             {u.locked && <Button type="link" size="small" onClick={() => run(() => adminService.userAction(u.id, 'unlock'), '已解锁')}>解锁</Button>}
+            {u.mfa_enabled && !self && (
+              <Popconfirm title={`重置 ${u.username} 的双因素认证？`} description="用于更换或丢失手机。重置后该账号立即退出登录，需重新绑定身份验证器。"
+                onConfirm={() => run(() => adminService.userAction(u.id, 'reset-mfa'), '已重置双因素认证')} okText="重置" cancelText="取消">
+                <Button type="link" size="small">重置双因素</Button>
+              </Popconfirm>
+            )}
             {u.status === 'active' ? (
               <Popconfirm title={`停用 ${u.username}？`} description="停用后该账号立即退出登录，且不能再登录。" disabled={self}
                 onConfirm={() => run(() => adminService.userAction(u.id, 'disable'), '已停用')} okText="停用" cancelText="取消">

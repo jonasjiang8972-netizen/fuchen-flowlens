@@ -84,14 +84,16 @@ func notFound(err error) error {
 
 const userColumns = `id, username, display_name, email, password_hash, password_history,
 	password_changed_at, must_change_password, role, status, failed_attempts, locked_until,
-	last_login_at, last_login_ip, expires_at, created_by, created_at, updated_at`
+	last_login_at, last_login_ip, expires_at, created_by, created_at, updated_at,
+	totp_enabled, totp_secret, totp_pending, totp_last_step`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	var history []byte
 	err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.PasswordHash, &history,
 		&u.PasswordChangedAt, &u.MustChangePassword, &u.Role, &u.Status, &u.FailedAttempts, &u.LockedUntil,
-		&u.LastLoginAt, &u.LastLoginIP, &u.ExpiresAt, &u.CreatedBy, &u.CreatedAt, &u.UpdatedAt)
+		&u.LastLoginAt, &u.LastLoginIP, &u.ExpiresAt, &u.CreatedBy, &u.CreatedAt, &u.UpdatedAt,
+		&u.TOTPEnabled, &u.TOTPSecret, &u.TOTPPending, &u.TOTPLastStep)
 	if err != nil {
 		return nil, notFound(err)
 	}
@@ -112,10 +114,11 @@ func historyJSON(u *User) []byte {
 
 func (s *PGStore) CreateUser(ctx context.Context, u *User) error {
 	_, err := s.pool.Exec(ctx, `INSERT INTO fl_users (`+userColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
 		u.ID, u.Username, u.DisplayName, u.Email, u.PasswordHash, historyJSON(u),
 		u.PasswordChangedAt, u.MustChangePassword, u.Role, u.Status, u.FailedAttempts, u.LockedUntil,
-		u.LastLoginAt, u.LastLoginIP, u.ExpiresAt, u.CreatedBy, u.CreatedAt, u.UpdatedAt)
+		u.LastLoginAt, u.LastLoginIP, u.ExpiresAt, u.CreatedBy, u.CreatedAt, u.UpdatedAt,
+		u.TOTPEnabled, u.TOTPSecret, u.TOTPPending, u.TOTPLastStep)
 	if err != nil && strings.Contains(err.Error(), "fl_users_username_uq") {
 		return fmt.Errorf("username %s already exists", u.Username)
 	}
@@ -126,10 +129,12 @@ func (s *PGStore) UpdateUser(ctx context.Context, u *User) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE fl_users SET username=$2, display_name=$3, email=$4,
 		password_hash=$5, password_history=$6, password_changed_at=$7, must_change_password=$8,
 		role=$9, status=$10, failed_attempts=$11, locked_until=$12, last_login_at=$13,
-		last_login_ip=$14, expires_at=$15, updated_at=$16 WHERE id=$1`,
+		last_login_ip=$14, expires_at=$15, updated_at=$16,
+		totp_enabled=$17, totp_secret=$18, totp_pending=$19, totp_last_step=$20 WHERE id=$1`,
 		u.ID, u.Username, u.DisplayName, u.Email, u.PasswordHash, historyJSON(u),
 		u.PasswordChangedAt, u.MustChangePassword, u.Role, u.Status, u.FailedAttempts, u.LockedUntil,
-		u.LastLoginAt, u.LastLoginIP, u.ExpiresAt, u.UpdatedAt)
+		u.LastLoginAt, u.LastLoginIP, u.ExpiresAt, u.UpdatedAt,
+		u.TOTPEnabled, u.TOTPSecret, u.TOTPPending, u.TOTPLastStep)
 	if err != nil {
 		return err
 	}
