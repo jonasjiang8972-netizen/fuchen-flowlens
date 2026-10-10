@@ -140,10 +140,10 @@ func (s *PlatformServer) StartEngines(ctx context.Context) {
 
 func (s *PlatformServer) RegisterAgentHandler(c *gin.Context) {
 	var req struct {
-		AgentID      string  `json:"agent_id"`
-		Hostname     string  `json:"hostname"`
-		CollectMode  string  `json:"collect_mode"`
-		Cluster      string  `json:"cluster"`
+		AgentID      string               `json:"agent_id"`
+		Hostname     string               `json:"hostname"`
+		CollectMode  string               `json:"collect_mode"`
+		Cluster      string               `json:"cluster"`
 		AgentVersion string               `json:"agent_version"`
 		OS           string               `json:"os"`
 		Arch         string               `json:"arch"`

@@ -47,8 +47,8 @@ type StatusHandler func(status string, message string)
 
 func NewMonitor(agentID string, cfg config.ManagementConfig) *Monitor {
 	return &Monitor{
-		agentID:  agentID,
-		config:   cfg,
+		agentID:    agentID,
+		config:     cfg,
 		status:     "initializing",
 		handlers:   make([]StatusHandler, 0),
 		procSample: procSample,
