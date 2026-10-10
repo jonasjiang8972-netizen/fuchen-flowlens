@@ -34,6 +34,17 @@ type Service struct {
 
 	fullMu sync.Mutex
 	full   FullVerifyStatus
+
+	listenMu  sync.RWMutex
+	listeners []func(storage.AuditRecord)
+}
+
+// OnRecord registers fn to be called with every record after it has been
+// stored (for forwarding to a SOC). fn must not block.
+func (s *Service) OnRecord(fn func(storage.AuditRecord)) {
+	s.listenMu.Lock()
+	defer s.listenMu.Unlock()
+	s.listeners = append(s.listeners, fn)
 }
 
 func New(store storage.AuditStore) *Service {
@@ -58,8 +69,14 @@ func (s *Service) Record(ctx context.Context, rec storage.AuditRecord) error {
 	})
 	if err != nil {
 		logger.L().Errorf("AUDIT WRITE FAILED (%s by %s): %v", rec.EventType, rec.Username, err)
+		return err
 	}
-	return err
+	s.listenMu.RLock()
+	for _, fn := range s.listeners {
+		fn(rec)
+	}
+	s.listenMu.RUnlock()
+	return nil
 }
 
 // Hash computes the SM3 chain hash of a record from its content and

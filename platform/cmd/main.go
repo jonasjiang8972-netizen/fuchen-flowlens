@@ -275,7 +275,11 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	adm.GET("/agents/:id", agents, srv.GetAgentHandler)
 	adm.GET("/ingest/metrics", agents, srv.IngestMetricsHandler)
 
-	adm.GET("/system/info", perm("admin", iam.PermSystemManage), srv.SystemInfoHandler)
+	system := perm("admin", iam.PermSystemManage)
+	adm.GET("/system/info", system, srv.SystemInfoHandler)
+	adm.GET("/forwarding", system, srv.GetForwardingHandler)
+	adm.PUT("/forwarding", system, srv.UpdateForwardingHandler)
+	adm.POST("/forwarding/test", system, srv.TestForwardingHandler)
 
 	auditRead := perm("admin", iam.PermAuditRead)
 	adm.GET("/audit-logs", auditRead, srv.ListAuditHandler)

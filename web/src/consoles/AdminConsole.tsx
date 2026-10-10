@@ -1,7 +1,7 @@
 import { lazy, useEffect, useMemo, useState } from 'react'
 import { Result } from 'antd'
 import {
-  AuditOutlined, CloudServerOutlined, SafetyOutlined, SettingOutlined, SolutionOutlined, TeamOutlined, ToolOutlined,
+  AuditOutlined, CloudServerOutlined, SafetyOutlined, SendOutlined, SettingOutlined, SolutionOutlined, TeamOutlined, ToolOutlined,
 } from '@ant-design/icons'
 import ConsoleShell from '../components/ConsoleShell'
 import type { ShellMenuItem } from '../components/ConsoleShell'
@@ -13,6 +13,7 @@ const Roles = lazy(() => import('../pages/admin/Roles'))
 const SecurityPolicy = lazy(() => import('../pages/admin/SecurityPolicy'))
 const AuditLogs = lazy(() => import('../pages/admin/AuditLogs'))
 const SystemSettings = lazy(() => import('../pages/admin/SystemSettings'))
+const Forwarding = lazy(() => import('../pages/admin/Forwarding'))
 const Agents = lazy(() => import('../pages/Agents'))
 const AgentDetail = lazy(() => import('../pages/AgentDetail'))
 
@@ -24,12 +25,13 @@ const allItems: (ShellMenuItem & { perm: Permission })[] = [
   { key: 'roles', icon: <SolutionOutlined />, label: '角色与权限', perm: 'user.manage' },
   { key: 'policy', icon: <SafetyOutlined />, label: '安全策略', perm: 'policy.manage' },
   { key: 'agents', icon: <CloudServerOutlined />, label: '采集器管理', perm: 'agent.manage' },
+  { key: 'forwarding', icon: <SendOutlined />, label: '外发配置', perm: 'system.manage' },
   { key: 'system', icon: <SettingOutlined />, label: '系统设置', perm: 'system.manage' },
   { key: 'audit', icon: <AuditOutlined />, label: '审计日志', perm: 'audit.read' },
 ]
 
 const labels: Record<string, string> = {
-  users: '用户管理', roles: '角色与权限', policy: '安全策略', agents: '采集器管理', system: '系统设置', audit: '审计日志',
+  users: '用户管理', roles: '角色与权限', policy: '安全策略', agents: '采集器管理', forwarding: '外发配置', system: '系统设置', audit: '审计日志',
   'agent-detail': '采集器详情',
 }
 
@@ -57,6 +59,7 @@ export default function AdminConsole() {
       case 'policy': return <SecurityPolicy />
       case 'agents': return <Agents onNavigate={navigateTo} />
       case 'agent-detail': return <AgentDetail agentId={detailId} onBack={() => navigateTo('agents')} onNavigate={navigateTo} />
+      case 'forwarding': return <Forwarding />
       case 'system': return <SystemSettings />
       case 'audit': return <AuditLogs />
       default: return <Result status="403" title="没有可用的管理功能" subTitle="当前账号没有系统管理后台的任何权限，请联系系统管理员。" />

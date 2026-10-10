@@ -166,6 +166,12 @@ func (s *PlatformServer) raise(d detection, req accessDetectionRequest, confiden
 		ip, account, d.Score, confidence)
 	if d.Endpoint != "" {
 		s.alertService.AddEndpoint(alert.ID, d.Endpoint)
+		if !containsString(alert.Endpoints, d.Endpoint) {
+			alert.Endpoints = append(alert.Endpoints, d.Endpoint)
+		}
+	}
+	if alert.OccurrenceCount <= 1 {
+		s.publishAlertCreated(&alert) // new alerts only; merges are not re-sent
 	}
 	s.ruleService.IncrementHit(d.RuleID)
 	return &alert
@@ -206,4 +212,13 @@ func (s *PlatformServer) applyAllRuleConfigs() {
 	for _, r := range s.ruleService.List() {
 		s.applyRuleConfig(r.ID)
 	}
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

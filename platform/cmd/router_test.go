@@ -197,6 +197,8 @@ func TestSeparationOfDuties(t *testing.T) {
 		{"GET", "/api/v1/admin/security-policy", "", []string{"sys_admin"}},
 		{"GET", "/api/v1/admin/agents", "", []string{"sys_admin"}},
 		{"GET", "/api/v1/admin/system/info", "", []string{"sys_admin"}},
+		{"GET", "/api/v1/admin/forwarding", "", []string{"sys_admin"}},
+		{"PUT", "/api/v1/admin/forwarding", `{"targets":[]}`, []string{"sys_admin"}},
 		{"GET", "/api/v1/admin/audit-logs", "", []string{"audit_admin"}},
 		{"GET", "/api/v1/admin/audit-logs/verify", "", []string{"audit_admin"}},
 		{"GET", "/api/v1/admin/audit-logs/verify-full", "", []string{"audit_admin"}},

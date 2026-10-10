@@ -74,6 +74,30 @@ function qs(q: Record<string, unknown>) {
   return s ? `?${s}` : ''
 }
 
+export interface ForwardTarget {
+  id?: string
+  name: string
+  type: 'syslog' | 'webhook'
+  enabled: boolean
+  events: string[]
+  min_severity: string
+  address?: string
+  protocol?: string
+  format?: string
+  facility?: number
+  url?: string
+  secret?: string
+}
+
+export interface ForwardStats {
+  sent: number
+  failed: number
+  dropped: number
+  last_error?: string
+  last_error_at?: string
+  last_sent_at?: string
+}
+
 export const adminService = {
   users: () => (DEMO ? Promise.resolve(demoUsers()) : request<{ items: UserView[] }>('/admin/users').then(r => r.items)),
   createUser: (in_: UserInput) => request<UserView>('/admin/users', { method: 'POST', body: JSON.stringify(in_) }),
@@ -100,6 +124,13 @@ export const adminService = {
   fullVerifyStatus: () => (DEMO ? Promise.resolve(demoFullStatus()) : request<FullVerifyStatus>('/admin/audit-logs/verify-full')),
   auditExportUrl: (q: AuditQuery) => `${API_BASE}/admin/audit-logs/export${qs({ ...q, limit: undefined, offset: undefined } as Record<string, unknown>)}`,
 
+  forwarding: () => (DEMO
+    ? Promise.resolve({ targets: [{ id: 'fwd-demo', name: 'SOC syslog', type: 'syslog', enabled: true, events: ['alert.created', 'audit'], min_severity: 'medium', address: '10.0.0.5:514', protocol: 'udp', format: 'cef', facility: 13 }] as ForwardTarget[], stats: { 'fwd-demo': { sent: 1280, failed: 0, dropped: 0 } } as Record<string, ForwardStats> })
+    : request<{ targets: ForwardTarget[]; stats: Record<string, ForwardStats> }>('/admin/forwarding')),
+  updateForwarding: (targets: ForwardTarget[]) =>
+    request<{ targets: ForwardTarget[]; stats: Record<string, ForwardStats> }>('/admin/forwarding', { method: 'PUT', body: JSON.stringify({ targets }) }),
+  testForwarding: (t: ForwardTarget) => (DEMO ? Promise.resolve({ ok: true } as { ok: boolean; error?: string })
+    : request<{ ok: boolean; error?: string }>('/admin/forwarding/test', { method: 'POST', body: JSON.stringify(t) })),
   systemInfo: () => (DEMO ? Promise.resolve({ version: '0.7.0', storage: 'postgresql', secure_cookie: true, demo_mode: false,
     ingest: { accepted: 1523000, dropped: 182, duplicates: 936, processed: 1522416, queue_depth: 584, queue_size: 20000 } })
     : request<any>('/admin/system/info')),

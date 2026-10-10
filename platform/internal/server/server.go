@@ -17,6 +17,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/audit"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/auth"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/forward"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/iam"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/ingest"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/service"
@@ -33,6 +34,7 @@ type PlatformServer struct {
 	alertService   *service.AlertService
 	ruleService    *service.RuleService
 	callerService  *service.CallerService
+	forwarder      *forward.Forwarder
 	topology       *service.TopologyService
 	traffic        trafficCounters
 	bolaEngine     *engine.BOLAEngine
@@ -103,6 +105,7 @@ func newServer(store storage.Store, agents *service.AgentService, assets *servic
 		alertService:  alerts,
 		ruleService:   rules,
 		callerService: service.NewCallerService(),
+		forwarder:     forward.New(store),
 		topology:      service.NewTopologyService(),
 		bolaEngine:    engine.NewBOLAEngine(store),
 		authEngine:    engine.NewAuthFailureEngine(store),
@@ -114,6 +117,7 @@ func newServer(store storage.Store, agents *service.AgentService, assets *servic
 		redactor:      redact.New(""),
 	}
 	srv.applyAllRuleConfigs()
+	auditSvc.OnRecord(func(rec storage.AuditRecord) { srv.forwarder.Publish(auditEvent(rec)) })
 	srv.ingestPipeline = ingest.NewPipeline(20000, srv.processIngestEvent)
 	return srv
 }
@@ -134,6 +138,9 @@ func (s *PlatformServer) FlushAll(ctx context.Context) error {
 }
 
 func (s *PlatformServer) StartEngines(ctx context.Context) {
+	if err := s.forwarder.Start(ctx); err != nil {
+		logger.L().Errorf("forwarding disabled: %v", err)
+	}
 	go s.bolaEngine.StartCleanup(ctx)
 	go s.authEngine.StartCleanup(ctx)
 	go s.botEngine.StartCleanup(ctx)
@@ -320,11 +327,13 @@ func (s *PlatformServer) AlertActionHandler(c *gin.Context) {
 	if p := auth.Principal(c); p != nil {
 		actor = p.Username
 	}
-	alert, err := s.alertService.ExecuteAction(c.Param("id"), c.Param("action"), actor, strings.TrimSpace(req.Note))
+	note := strings.TrimSpace(req.Note)
+	alert, err := s.alertService.ExecuteAction(c.Param("id"), c.Param("action"), actor, note)
 	if err != nil {
 		serviceErr(c, err)
 		return
 	}
+	s.publishAlertHandled(alert, c.Param("action"), actor, note)
 	c.JSON(200, alert)
 }
 
