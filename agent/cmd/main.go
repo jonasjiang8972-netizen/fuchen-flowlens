@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/collector"
-	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/collector/ebpf"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/collector/gwlog"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/config"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/agent/internal/detector"
@@ -53,11 +52,11 @@ func main() {
 	env := detector.DetectEnvironment()
 	log.Infof("Environment: %s", env.String())
 
-	collectMode := detector.CollectMode(cfg.Collector.Mode)
-	if collectMode == detector.ModeAuto {
-		collectMode = detector.AutoDetect(env)
-		log.Infof("Auto-detected mode: %s", collectMode)
+	collectMode, err := resolveMode(cfg, env)
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
+	log.Infof("Collect mode: %s", collectMode)
 
 	coll, err := createCollector(collectMode)
 	if err != nil {
@@ -65,15 +64,17 @@ func main() {
 	}
 
 	collectorCfg := collector.CollectorConfig{
-		Interface:      cfg.Collector.Interface,
-		FilterPorts:    cfg.Collector.FilterPorts,
-		CaptureHeaders: cfg.Collector.CaptureHeaders,
-		CaptureBody:    cfg.Collector.CaptureBody,
-		MaxBodySize:    cfg.Collector.MaxBodySizeKB * 1024,
-		BufferSize:     10000,
-		Workers:        cfg.Collector.Workers,
-		GWLogPath:      cfg.Collector.GWLog.Path,
-		GWLogFormat:    cfg.Collector.GWLog.Format,
+		Interface:        cfg.Collector.Interface,
+		FilterPorts:      cfg.Collector.FilterPorts,
+		CaptureHeaders:   cfg.Collector.CaptureHeaders,
+		CaptureBody:      cfg.Collector.CaptureBody,
+		MaxBodySize:      cfg.Collector.MaxBodySizeKB * 1024,
+		BufferSize:       10000,
+		Workers:          cfg.Collector.Workers,
+		GWLogPath:        cfg.Collector.GWLog.Path,
+		GWLogFormat:      cfg.Collector.GWLog.Format,
+		GWLogNginxFormat: cfg.Collector.GWLog.NginxLogFormat,
+		GWLogClientIP:    cfg.Collector.GWLog.ClientIPFrom,
 	}
 
 	if err := coll.Initialize(collectorCfg); err != nil {
@@ -167,21 +168,39 @@ func main() {
 	log.Info("Agent stopped gracefully")
 }
 
-func createCollector(mode detector.CollectMode) (collector.Collector, error) {
-	switch mode {
-	case detector.ModeEBPF:
-		return ebpf.New(), nil
-	case detector.ModeGatewayLog:
-		return gwlog.New(), nil
-	case detector.ModeDPDK:
-		return nil, fmt.Errorf("DPDK collector not yet implemented")
-	case detector.ModeVPCFlow:
-		return nil, fmt.Errorf("VPC Flow collector not yet implemented")
-	case detector.ModePcap:
-		return nil, fmt.Errorf("pcap collector not yet implemented")
-	default:
-		return gwlog.New(), nil
+// resolveMode picks the collection mode. Only gateway_log is implemented in
+// this version: auto mode uses it when a gateway log is configured or found
+// at a well-known path, and any other mode fails with an explanation
+// instead of starting a collector that sees nothing.
+func resolveMode(cfg *config.Config, env *detector.Environment) (detector.CollectMode, error) {
+	mode := detector.CollectMode(cfg.Collector.Mode)
+	if mode == "" {
+		mode = detector.ModeAuto
 	}
+	if mode == detector.ModeAuto {
+		switch {
+		case cfg.Collector.GWLog.Path != "":
+			return detector.ModeGatewayLog, nil
+		case env.GWLogPath != "":
+			cfg.Collector.GWLog.Path = env.GWLogPath
+			if cfg.Collector.GWLog.Format == "" || cfg.Collector.GWLog.Format == "json" {
+				cfg.Collector.GWLog.Format = env.GWLogFormat
+			}
+			return detector.ModeGatewayLog, nil
+		}
+		return "", fmt.Errorf("no gateway access log found: set collector.mode: gateway_log and collector.gateway_log.path (this version collects from gateway access logs only)")
+	}
+	if mode != detector.ModeGatewayLog {
+		return "", fmt.Errorf("collect mode %q is not available in this version; use gateway_log", mode)
+	}
+	return mode, nil
+}
+
+func createCollector(mode detector.CollectMode) (collector.Collector, error) {
+	if mode != detector.ModeGatewayLog {
+		return nil, fmt.Errorf("collect mode %q is not available in this version", mode)
+	}
+	return gwlog.New(), nil
 }
 
 func processEvents(ctx context.Context, coll collector.Collector, norm *normalizer.Normalizer, red *redact.Redactor, mon *health.Monitor, mgr *mgmt.Client, agentID string, batchSize int, flushInterval time.Duration) {

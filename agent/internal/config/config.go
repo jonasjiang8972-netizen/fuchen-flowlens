@@ -47,8 +47,15 @@ type DPDKConfig struct {
 }
 
 type GWLogConfig struct {
-	Path   string `yaml:"path"`
+	Path string `yaml:"path"`
+	// Format is "json" (one JSON object per line, Kong-style fields) or
+	// "nginx" (text lines written by an nginx log_format).
 	Format string `yaml:"format"`
+	// NginxLogFormat is the log_format string of the gateway, copied from
+	// its nginx configuration; empty means the standard combined format.
+	NginxLogFormat string `yaml:"nginx_log_format"`
+	// ClientIPFrom is "remote_addr" (default) or "x_forwarded_for".
+	ClientIPFrom string `yaml:"client_ip_from"`
 }
 
 type VPCConfig struct {

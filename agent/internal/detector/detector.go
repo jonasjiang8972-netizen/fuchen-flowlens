@@ -134,10 +134,11 @@ func detectGatewayLog() (string, string) {
 		path   string
 		format string
 	}{
-		{"/var/log/kong/access.log", "json"},
-		{"/var/log/apisix/access.log", "json"},
+		// Kong and APISIX write nginx-style access logs by default.
+		{"/var/log/kong/access.log", "nginx"},
+		{"/usr/local/apisix/logs/access.log", "nginx"},
+		{"/var/log/apisix/access.log", "nginx"},
 		{"/var/log/nginx/access.log", "nginx"},
-		{"/var/log/envoy/access.log", "envoy"},
 	}
 
 	for _, p := range paths {

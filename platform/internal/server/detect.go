@@ -60,16 +60,30 @@ type detectInput struct {
 	at          time.Time // when the request was made; zero means now
 }
 
-// evaluate runs every enabled rule's engine on one request and returns the
-// highest-scoring finding. Disabled rules are not evaluated. Baselines that
-// take time to build (BFLA role shares, authentication failures) keep being
-// recorded while their rule is off, so switching it on takes effect at once.
+// evaluate returns the highest-scoring finding for one request (see
+// evaluateAll).
 func (s *PlatformServer) evaluate(in detectInput) detection {
-	req := in.req
 	var best detection
+	for _, d := range s.evaluateAll(in) {
+		if d.Score > best.Score {
+			best = d
+		}
+	}
+	return best
+}
+
+// evaluateAll runs every enabled rule's engine on one request and returns
+// each rule's finding (score > 0). One request can concern several rules,
+// such as a scripted crawler that also walks objects. Disabled rules are
+// not evaluated. Baselines that take time to build (BFLA role shares,
+// authentication failures) keep being recorded while their rule is off, so
+// switching it on takes effect at once.
+func (s *PlatformServer) evaluateAll(in detectInput) []detection {
+	req := in.req
+	var found []detection
 	consider := func(ruleID string, score int, reason string) {
-		if score > best.Score {
-			best = detection{RuleID: ruleID, Score: score, Reason: reason}
+		if score > 0 {
+			found = append(found, detection{RuleID: ruleID, Score: score, Reason: reason})
 		}
 	}
 
@@ -109,15 +123,17 @@ func (s *PlatformServer) evaluate(in detectInput) detection {
 	if req.Endpoint != "" && s.ruleService.IsEnabled(ruleRate) {
 		endpoint := strings.TrimSpace(in.method + " " + req.Endpoint)
 		score, reason, top := s.rateEngine.Evaluate(endpoint, req.SourceIP, in.at)
-		if score > best.Score {
-			best = detection{RuleID: ruleRate, Score: score, Reason: reason,
-				Subject: "endpoint:" + endpoint, SubjectIP: top, override: true}
+		if score > 0 {
+			found = append(found, detection{RuleID: ruleRate, Score: score, Reason: reason,
+				Subject: "endpoint:" + endpoint, SubjectIP: top, override: true})
 		}
 	}
-	if best.RuleID != "" && req.Endpoint != "" {
-		best.Endpoint = strings.TrimSpace(in.method + " " + req.Endpoint)
+	if req.Endpoint != "" {
+		for i := range found {
+			found[i].Endpoint = strings.TrimSpace(in.method + " " + req.Endpoint)
+		}
 	}
-	return best
+	return found
 }
 
 // raise turns a finding at or above alertThreshold into an alert (merged

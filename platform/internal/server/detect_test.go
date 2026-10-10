@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/service"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/storage"
@@ -187,5 +188,28 @@ func TestBFLASkipsInternalNetworkOnlyCallers(t *testing.T) {
 	user := accessDetectionRequest{AccountID: "u-1", Role: "user", Endpoint: "/api/v1/admin/export", SourceIP: "10.20.0.6", Status: 200}
 	if d := srv.evaluate(detectInput{req: user}); d.RuleID != ruleBFLA {
 		t.Fatalf("identified user not flagged: %+v", d)
+	}
+}
+
+// A crawler walking objects on a fixed rhythm is both a traversal and a
+// bot: each rule raises its own alert.
+func TestEachMatchingRuleRaisesItsAlert(t *testing.T) {
+	srv := NewPlatformServer(storage.NewMemStore())
+	base := time.Now().Add(-time.Minute)
+	for i := 0; i < 40; i++ {
+		var evt shared.APIEvent
+		evt.Application.Method = "GET"
+		evt.Application.PathRaw = fmt.Sprintf("/api/v1/users/%d", 1000+i)
+		evt.Network.SrcIP = "10.9.9.9"
+		evt.Timestamp = base.Add(time.Duration(i) * time.Second)
+		evt.Content.RequestHeaders = map[string]string{"x-user-id": "crawler-1"}
+		srv.processIngestEvent(t.Context(), evt)
+	}
+	reqs := map[string]bool{}
+	for _, a := range alertsFor(srv, "crawler-1") {
+		reqs[a.SourceRequirement] = true
+	}
+	if !reqs["FR-DET-001"] || !reqs["FR-RISK-002"] {
+		t.Fatalf("alerts by requirement: %v, want BOLA and bot", reqs)
 	}
 }

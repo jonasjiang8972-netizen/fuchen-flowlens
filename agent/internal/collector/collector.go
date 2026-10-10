@@ -29,6 +29,12 @@ type CollectorConfig struct {
 	Workers        int
 	GWLogPath      string
 	GWLogFormat    string
+	// GWLogNginxFormat is the nginx log_format of a text access log
+	// (format "nginx"); empty means the standard combined format.
+	GWLogNginxFormat string
+	// GWLogClientIP picks the client address: "remote_addr" (default) or
+	// "x_forwarded_for" (first address, for gateways behind a balancer).
+	GWLogClientIP string
 }
 
 type CollectorStats struct {

@@ -6,15 +6,23 @@ agent:
   log_level: info
 
 collector:
-  # gateway_log: tail a JSON access log (one JSON object per line), e.g.
-  # {"request":{"method":"GET","uri":"/api/v1/users/1","host":"shop"},
-  #  "response":{"status":200},"client_ip":"10.0.0.8",
-  #  "upstream_addr":"10.0.1.5:8080","request_length":312,
-  #  "bytes_sent":1024,"request_time":0.012,"route":{"name":"user-svc"}}
+  # This version collects from gateway access logs.
   mode: gateway_log
   gateway_log:
     path: /var/log/gateway/access.log
+    # json: one JSON object per line (Kong file-log fields, or the flat
+    #   fields of the demo generator). Request headers such as x-user-id
+    #   identify callers.
+    # nginx: text lines written by an nginx log_format (nginx, OpenResty,
+    #   Kong and APISIX access logs). Copy the gateway's log_format below;
+    #   leave it empty for the standard "combined" format. Add
+    #   $request_time, $upstream_addr, $host and $http_x_user_id (any
+    #   $http_<header>) to the gateway format for richer analysis.
     format: json
+    # nginx_log_format: '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_time "$upstream_addr" $host "$http_x_user_id"'
+    # remote_addr (default) or x_forwarded_for when the gateway sits
+    # behind a load balancer.
+    # client_ip_from: remote_addr
 
 management:
   # Inside the compose network the agent talks to the platform directly.

@@ -24,6 +24,7 @@ type GatewayLogCollector struct {
 	config collector.CollectorConfig
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	nginx  *nginxParser // set for format "nginx"
 }
 
 func New() collector.Collector {
@@ -36,8 +37,21 @@ func (g *GatewayLogCollector) Name() string {
 	return "gateway_log"
 }
 
+// Initialize checks the log format: "json" (default) or "nginx", whose
+// log_format must compile.
 func (g *GatewayLogCollector) Initialize(cfg collector.CollectorConfig) error {
 	g.config = cfg
+	switch strings.ToLower(cfg.GWLogFormat) {
+	case "", "json":
+	case "nginx", "combined":
+		p, err := newNginxParser(cfg.GWLogNginxFormat, cfg.GWLogClientIP)
+		if err != nil {
+			return err
+		}
+		g.nginx = p
+	default:
+		return fmt.Errorf("unsupported gateway log format %q (use json or nginx)", cfg.GWLogFormat)
+	}
 	return nil
 }
 
@@ -194,11 +208,10 @@ func (g *GatewayLogCollector) handleLine(line string) {
 }
 
 func (g *GatewayLogCollector) parseLine(line string) *shared.APIEvent {
-	format := g.config.GWLogFormat
-	if format == "" {
-		format = "json"
+	if g.nginx != nil {
+		return g.nginx.parse(line)
 	}
-	return g.parseJSON(line)
+	return parseJSON(line)
 }
 
 // newEventID returns an ID unique per event. The platform drops events whose
@@ -214,37 +227,54 @@ func newEventID(now time.Time) string {
 
 var eventSeq atomic.Uint64
 
-func (g *GatewayLogCollector) parseJSON(line string) *shared.APIEvent {
+// newEvent returns an empty gateway-log event stamped now; parsers replace
+// the timestamp when the log line carries one.
+func newEvent() *shared.APIEvent {
+	now := time.Now()
+	return &shared.APIEvent{
+		EventID:     newEventID(now),
+		Timestamp:   now,
+		Source:      "gateway_log",
+		Application: shared.ApplicationLayer{ProtocolType: "REST"},
+	}
+}
+
+// parseJSON reads one JSON log line. Field names follow Kong's file-log
+// plugin (request.method/uri/host/headers/querystring, response.status,
+// client_ip, upstream_uri, started_at, latencies) plus the flat fields the
+// demo generator and simple nginx JSON formats write.
+func parseJSON(line string) *shared.APIEvent {
 	var entry map[string]interface{}
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
 		return nil
 	}
-
-	now := time.Now()
-	evt := &shared.APIEvent{
-		EventID:   newEventID(now),
-		Timestamp: now,
-		Source:    "gateway_log",
-		Application: shared.ApplicationLayer{
-			ProtocolType: "REST",
-		},
-	}
+	evt := newEvent()
+	app := &evt.Application
 
 	if v, ok := entry["request"].(map[string]interface{}); ok {
-		if method, ok := v["method"].(string); ok {
-			evt.Application.Method = method
+		app.Method, _ = v["method"].(string)
+		app.PathRaw, _ = v["uri"].(string)
+		app.Host, _ = v["host"].(string)
+		if h := stringMap(v["headers"]); len(h) > 0 {
+			delete(h, "cookie")
+			evt.Content.RequestHeaders = h
+			if app.Host == "" {
+				app.Host = strings.Split(h["host"], ":")[0]
+			}
 		}
-		if uri, ok := v["uri"].(string); ok {
-			evt.Application.PathRaw = uri
+		if q := stringMap(v["querystring"]); len(q) > 0 {
+			evt.Content.QueryParams = q
 		}
-		if host, ok := v["host"].(string); ok {
-			evt.Application.Host = host
+		if n, ok := v["size"].(float64); ok {
+			app.BytesIn = uint64(n)
 		}
 	}
-
 	if v, ok := entry["response"].(map[string]interface{}); ok {
 		if status, ok := v["status"].(float64); ok {
-			evt.Application.StatusCode = uint16(status)
+			app.StatusCode = uint16(status)
+		}
+		if n, ok := v["size"].(float64); ok {
+			app.BytesOut = uint64(n)
 		}
 	}
 
@@ -252,22 +282,67 @@ func (g *GatewayLogCollector) parseJSON(line string) *shared.APIEvent {
 		evt.Network.SrcIP = v
 	}
 	if v, ok := entry["upstream_addr"].(string); ok {
-		evt.Network.DstIP = strings.Split(v, ":")[0]
+		evt.Network.DstIP = hostPart(strings.TrimSpace(strings.Split(v, ",")[0]))
 	}
 	if v, ok := entry["request_length"].(float64); ok {
-		evt.Application.BytesIn = uint64(v)
+		app.BytesIn = uint64(v)
 	}
 	if v, ok := entry["bytes_sent"].(float64); ok {
-		evt.Application.BytesOut = uint64(v)
+		app.BytesOut = uint64(v)
 	}
 	if v, ok := entry["request_time"].(float64); ok {
-		evt.Application.DurationMs = v * 1000
+		app.DurationMs = v * 1000
+	}
+	if v, ok := entry["latencies"].(map[string]interface{}); ok {
+		if ms, ok := v["request"].(float64); ok {
+			app.DurationMs = ms
+		}
 	}
 	if v, ok := entry["route"].(map[string]interface{}); ok {
 		if name, ok := v["name"].(string); ok {
 			evt.Metadata.ServiceName = name
 		}
 	}
+	if v, ok := entry["service"].(map[string]interface{}); ok && evt.Metadata.ServiceName == "" {
+		evt.Metadata.ServiceName, _ = v["name"].(string)
+	}
 
+	// Request time: Kong's started_at (epoch ms) or an ISO 8601 field.
+	if ms, ok := entry["started_at"].(float64); ok && ms > 0 {
+		evt.Timestamp = time.UnixMilli(int64(ms))
+	}
+	for _, k := range []string{"@timestamp", "time", "timestamp", "time_iso8601"} {
+		if v, ok := entry[k].(string); ok {
+			if t, err := time.Parse(time.RFC3339, v); err == nil {
+				evt.Timestamp = t
+				break
+			}
+		}
+	}
 	return evt
+}
+
+// stringMap converts a JSON object of strings (or string lists, which Kong
+// writes for repeated headers) into a map with lower-case keys.
+func stringMap(v interface{}) map[string]string {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, raw := range m {
+		switch t := raw.(type) {
+		case string:
+			out[strings.ToLower(k)] = t
+		case []interface{}:
+			if len(t) > 0 {
+				if s, ok := t[0].(string); ok {
+					out[strings.ToLower(k)] = s
+				}
+			}
+		case bool:
+			out[strings.ToLower(k)] = ""
+		}
+	}
+	return out
 }

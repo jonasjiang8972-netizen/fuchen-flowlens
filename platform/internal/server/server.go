@@ -414,7 +414,7 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 		SourceIP:  evt.Network.SrcIP,
 		Status:    int(evt.Application.StatusCode),
 	}
-	d := s.evaluate(detectInput{
+	findings := s.evaluateAll(detectInput{
 		req:       req,
 		sensitive: exposedSensitiveFields(evt),
 		method:    evt.Application.Method,
@@ -424,7 +424,9 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 
 		networkOnly: principal.Type == "network_principal",
 	})
-	s.raise(d, req, principal.Confidence)
+	for _, d := range findings {
+		s.raise(d, req, principal.Confidence)
+	}
 
 	if evt.AgentID != "" {
 		s.agentService.SeenTraffic(evt.AgentID, evt.Application.Method+" "+evt.Application.PathNormalized)
@@ -441,8 +443,14 @@ func (s *PlatformServer) RecordAccessHandler(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid request"})
 		return
 	}
-	d := s.evaluate(detectInput{req: req})
-	alert := s.raise(d, req, 0.86)
+	var d detection
+	var alert *service.Alert
+	for _, f := range s.evaluateAll(detectInput{req: req}) {
+		a := s.raise(f, req, 0.86)
+		if f.Score > d.Score {
+			d, alert = f, a
+		}
+	}
 	c.JSON(200, gin.H{
 		"risk_score": d.Score,
 		"reason":     d.Reason,

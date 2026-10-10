@@ -153,18 +153,49 @@ cd deploy/poc
 
 ## 5. 接入真实流量
 
-Agent 采用网关日志模式：读取 API 网关的 JSON 格式访问日志，每行一个 JSON 对象。
+Agent 读取 API 网关的访问日志，支持两种格式（`conf/agent-config.yaml` 中的 `gateway_log.format`）。
 
-```json
-{"request":{"method":"GET","uri":"/api/v1/users/1","host":"shop.example.com"},
- "response":{"status":200},"client_ip":"10.0.0.8","upstream_addr":"10.0.1.5:8080",
- "request_length":312,"bytes_sent":1024,"request_time":0.012,"route":{"name":"user-svc"}}
+**nginx 文本日志（`format: nginx`）**
+
+适用于 nginx、OpenResty、Kong、APISIX 的访问日志。把网关 nginx 配置中的 `log_format` 原样复制到 `nginx_log_format`，不填则按 nginx 默认的 combined 格式解析：
+
+```yaml
+gateway_log:
+  path: /var/log/gateway/access.log
+  format: nginx
+  nginx_log_format: '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_time "$upstream_addr" $host "$http_x_user_id"'
+  client_ip_from: remote_addr     # 网关在负载均衡之后时改为 x_forwarded_for
 ```
 
-- 字段格式与 Kong 等网关的 JSON 日志一致。
-- nginx 可以用 `log_format ... escape=json` 输出同样的结构。
-- Agent 支持日志轮转（按重命名或 copytruncate 方式均可）。
-- 身份证号、手机号、银行卡号和凭证类请求头在离开主机前脱敏。
+建议在网关的 `log_format` 中加入以下变量，分析结果更完整：
+
+| 变量 | 作用 |
+|------|------|
+| `$request_time` | 接口耗时 |
+| `$upstream_addr` | 后端服务地址，用于调用链路 |
+| `$host` | 访问的主机 |
+| `$http_x_user_id` 等 `$http_<请求头>` | 网关认证后的用户、API Key 或服务名，用于识别调用方、越权和爬虫检测 |
+
+`$cookie_*` 和 Cookie 请求头不会被采集。
+
+**JSON 日志（`format: json`，默认）**
+
+每行一个 JSON 对象，字段与 Kong 的 file-log 插件一致：
+
+```json
+{"request":{"method":"GET","uri":"/api/v1/users/1","host":"shop.example.com",
+ "headers":{"x-user-id":"u-1001"}},"response":{"status":200},"client_ip":"10.0.0.8",
+ "upstream_addr":"10.0.1.5:8080","request_time":0.012,"route":{"name":"user-svc"},
+ "time":"2026-10-10T08:00:00Z"}
+```
+
+两种格式都支持：
+
+- 日志轮转（按重命名或 copytruncate 方式均可）；Agent 启动时日志文件还不存在也会等待。
+- URL 中的查询参数会被拆出，同一接口的不同参数值和不同 ID 归为同一个 API 资产。
+- 身份证号、手机号、银行卡号和凭证在离开主机前脱敏。
+
+本版本只支持网关日志采集。`collector.mode: auto` 会在常见位置（`/var/log/nginx/access.log`、Kong、APISIX 默认路径）查找访问日志，找不到时 Agent 会报错退出并提示配置方法。
 
 ### 5.1 Agent 与平台部署在同一台服务器
 
