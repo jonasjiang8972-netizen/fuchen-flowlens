@@ -1,171 +1,132 @@
-import { Card, Col, Progress, Row, Space, Table, Tag } from 'antd'
-import { ApartmentOutlined, KeyOutlined, SafetyCertificateOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons'
+import { useEffect, useState } from 'react'
+import { Card, Col, Progress, Row, Select, Table, Tag } from 'antd'
+import { ApartmentOutlined, GlobalOutlined, KeyOutlined, UserOutlined } from '@ant-design/icons'
+import { callerService } from '../services/api'
 
-const principalRows = [
-  {
-    id: 'usr-88213',
-    type: 'external_user',
-    label: '外部用户',
-    source: 'JWT sub + Cookie sid + 登录事件绑定',
-    confidence: 92,
-    zone: '公网',
-    lastSeen: '5分钟前',
-    risk: 'high',
-  },
-  {
-    id: 'partner-alipay-openapi',
-    type: 'partner',
-    label: '供应链伙伴',
-    source: 'x-api-key + partner registry + 白名单 IP',
-    confidence: 96,
-    zone: 'Partner 专线',
-    lastSeen: '12分钟前',
-    risk: 'medium',
-  },
-  {
-    id: 'svc-order-api',
-    type: 'internal_service',
-    label: '内部服务',
-    source: 'mTLS SAN + x-service-name + K8s serviceAccount',
-    confidence: 98,
-    zone: '内网服务',
-    lastSeen: '刚刚',
-    risk: 'low',
-  },
-  {
-    id: 'ops-admin-zhang',
-    type: 'internal_user',
-    label: '内部用户',
-    source: 'SSO token + VPN 网关 + 企业邮箱域',
-    confidence: 89,
-    zone: '办公网',
-    lastSeen: '28分钟前',
-    risk: 'medium',
-  },
-]
+const typeLabel: Record<string, string> = {
+  external_user: '外部用户',
+  partner: '合作方',
+  internal_service: '内部服务',
+  network_principal: '仅识别到 IP',
+  unknown: '未知',
+}
 
-const extractorRows = [
-  { id: 'jwt-sub', name: 'JWT Subject', source: 'header.Authorization', parser: 'jwt.claim.sub', principal: '外部用户 / 内部用户', status: 'enabled' },
-  { id: 'partner-key', name: 'Partner API Key', source: 'header.x-api-key', parser: 'api_key.lookup(partner_registry)', principal: '供应链伙伴', status: 'enabled' },
-  { id: 'mtls-san', name: 'mTLS Service Identity', source: 'tls.peer_certificate.san', parser: 'certificate.san', principal: '内部服务', status: 'enabled' },
-  { id: 'session-bind', name: 'Session 弱关联', source: 'cookie.sid + ip + ua + 5min window', parser: 'behavior_correlation', principal: '外部用户', status: 'observe' },
-  { id: 'gateway-consumer', name: 'Gateway Consumer', source: 'x-consumer-id / x-route-id', parser: 'gateway_header', principal: '外部用户 / Partner', status: 'enabled' },
-]
+const typeColor: Record<string, string> = {
+  external_user: 'blue',
+  partner: 'purple',
+  internal_service: 'cyan',
+  network_principal: 'default',
+  unknown: 'default',
+}
 
-const registryRows = [
-  { name: 'internal_user_registry', owner: 'IAM / SSO 团队', records: 12842, use: '识别内部员工、运维账号、后台用户' },
-  { name: 'partner_registry', owner: '开放平台团队', records: 126, use: '识别合作方、Partner API Key、配额和数据外发责任' },
-  { name: 'service_account_registry', owner: '平台工程团队', records: 842, use: '识别内部服务账号、K8s ServiceAccount、mTLS 证书' },
-  { name: 'network_zone_registry', owner: '网络安全团队', records: 38, use: '区分公网、办公网、生产内网、Partner 专线、VPN' },
-]
+const evidenceLabel: Record<string, string> = {
+  gateway_header: '网关身份头',
+  api_key: 'API Key',
+  service_header: '服务名请求头',
+  query_param: 'URL 参数',
+  source_ip: '来源 IP',
+  none: '无',
+}
 
-function riskTag(risk: string) {
-  const color: Record<string, string> = { high: 'orange', medium: 'gold', low: 'blue' }
-  const label: Record<string, string> = { high: '高风险', medium: '需关注', low: '正常' }
-  return <Tag color={color[risk]}>{label[risk]}</Tag>
+function ago(t: string) {
+  const s = Math.max(0, (Date.now() - new Date(t).getTime()) / 1000)
+  if (s < 60) return '刚刚'
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`
+  return `${Math.floor(s / 86400)} 天前`
 }
 
 export default function IdentityCenter() {
+  const [data, setData] = useState<any>(null)
+  const [type, setType] = useState('')
+
+  useEffect(() => {
+    callerService.list(type || undefined).then(setData)
+  }, [type])
+
+  const stats = data?.stats
+  const byType = stats?.callers_by_type || {}
+  const traffic = stats?.requests_by_type || {}
+  const totalRequests = stats?.requests || 0
+  const identifiedRequests = totalRequests - (traffic.network_principal || 0) - (traffic.unknown || 0)
+  const identifiedShare = totalRequests ? Math.round((identifiedRequests / totalRequests) * 100) : null
+
+  const metric = (icon: React.ReactNode, key: string, desc: string) => (
+    <Card className="metric-card" style={{ cursor: 'pointer' }} onClick={() => setType(type === key ? '' : key)}>
+      <div className="metric-card__label">{icon} {typeLabel[key]}</div>
+      <div className="metric-card__value">{(byType[key] || 0).toLocaleString()}</div>
+      <div className="metric-card__meta">{(traffic[key] || 0).toLocaleString()} 次请求 · {desc}</div>
+    </Card>
+  )
+
   return (
     <div className="commercial-page">
       <div className="page-heading">
         <div>
           <div className="page-heading__title">身份与调用方</div>
-          <div className="page-heading__desc">通过显式身份解析、弱关联和注册表映射，识别外部用户、内部用户、供应链伙伴与内部服务。</div>
+          <div className="page-heading__desc">按请求中的身份信息识别外部用户、合作方和内部服务，统计各调用方的访问情况（平台启动以来）。</div>
         </div>
       </div>
 
       <div className="metric-grid">
-        <Card className="metric-card">
-          <div className="metric-card__label"><UserOutlined /> 外部用户</div>
-          <div className="metric-card__value">18.4k</div>
-          <div className="metric-card__meta">JWT、Cookie、登录事件和设备指纹关联</div>
-        </Card>
-        <Card className="metric-card">
-          <div className="metric-card__label"><TeamOutlined /> 内部用户</div>
-          <div className="metric-card__value">326</div>
-          <div className="metric-card__meta">SSO、VPN、办公网和后台操作链路</div>
-        </Card>
-        <Card className="metric-card">
-          <div className="metric-card__label"><KeyOutlined /> 供应链伙伴</div>
-          <div className="metric-card__value">42</div>
-          <div className="metric-card__meta">API Key、Partner 专线路由和白名单 IP</div>
-        </Card>
-        <Card className="metric-card">
-          <div className="metric-card__label"><ApartmentOutlined /> 内部服务</div>
-          <div className="metric-card__value">168</div>
-          <div className="metric-card__meta">mTLS、K8s ServiceAccount 和服务发现</div>
-        </Card>
+        {metric(<UserOutlined />, 'external_user', '网关身份头或 URL 参数')}
+        {metric(<KeyOutlined />, 'partner', 'API Key')}
+        {metric(<ApartmentOutlined />, 'internal_service', '服务名请求头')}
+        {metric(<GlobalOutlined />, 'network_principal', '只能按来源 IP 归并')}
       </div>
 
       <Row gutter={[16, 16]}>
-        <Col xs={24} xl={15}>
-          <Card title="主体识别结果">
+        <Col xs={24} xl={16}>
+          <Card
+            title="调用方"
+            extra={<Select value={type} onChange={setType} style={{ width: 150 }}
+              options={[{ value: '', label: '全部类型' }, ...Object.keys(typeLabel).filter(k => k !== 'unknown').map(k => ({ value: k, label: typeLabel[k] }))]} />}
+          >
             <Table
               columns={[
-                { title: '主体ID', dataIndex: 'id', key: 'id' },
-                { title: '类型', dataIndex: 'label', key: 'label', width: 110, render: (value: string) => <Tag>{value}</Tag> },
-                { title: '证据来源', dataIndex: 'source', key: 'source' },
-                { title: '置信度', dataIndex: 'confidence', key: 'confidence', width: 130, render: (value: number) => <Progress percent={value} size="small" strokeColor={value >= 90 ? 'var(--fl-success)' : 'var(--fl-medium)'} /> },
-                { title: '网络域', dataIndex: 'zone', key: 'zone', width: 120 },
-                { title: '风险', dataIndex: 'risk', key: 'risk', width: 100, render: riskTag },
+                { title: '调用方', dataIndex: 'caller_id', key: 'id', render: (v: string) => <span className="mono">{v}</span> },
+                { title: '类型', dataIndex: 'type', key: 'type', width: 110, render: (v: string) => <Tag color={typeColor[v]}>{typeLabel[v] || v}</Tag> },
+                { title: '识别依据', dataIndex: 'evidence', key: 'evidence', width: 110, render: (v: string) => evidenceLabel[v] || v },
+                { title: '置信度', dataIndex: 'confidence', key: 'confidence', width: 120, render: (v: number) => <Progress percent={Math.round(v * 100)} size="small" strokeColor={v >= 0.9 ? 'var(--fl-success)' : 'var(--fl-medium)'} /> },
+                { title: '请求', dataIndex: 'requests', key: 'requests', width: 90, align: 'right' as const, render: (v: number) => v.toLocaleString() },
+                { title: '错误率', key: 'errors', width: 80, align: 'right' as const, render: (_: any, r: any) => { const rate = r.requests ? r.errors / r.requests : 0; return <span style={{ color: rate >= 0.2 ? 'var(--fl-critical)' : undefined }}>{(rate * 100).toFixed(1)}%</span> } },
+                { title: '接口数', dataIndex: 'endpoints', key: 'endpoints', width: 80, align: 'right' as const },
+                { title: '未关闭告警', dataIndex: 'open_alerts', key: 'alerts', width: 100, align: 'right' as const, render: (v: number) => (v ? <Tag color="red">{v}</Tag> : 0) },
+                { title: '最近访问', dataIndex: 'last_seen', key: 'last', width: 100, render: ago },
               ]}
-              dataSource={principalRows}
-              rowKey="id"
+              dataSource={data?.items || []}
+              rowKey="caller_id"
+              size="small"
+              pagination={(data?.items?.length || 0) > 15 ? { pageSize: 15 } : false}
+              expandable={{ expandedRowRender: (r: any) => <span className="muted">来源 IP：{(r.source_ips || []).join('、') || '-'}　首次访问：{new Date(r.first_seen).toLocaleString('zh-CN')}{r.role ? `　角色：${r.role}` : ''}</span> }}
+              locale={{ emptyText: '暂无流量' }}
+            />
+            {(stats?.untracked_requests || 0) > 0 && <div className="muted" style={{ marginTop: 8 }}>调用方超过 2 万个后，新调用方的 {stats.untracked_requests.toLocaleString()} 次请求未单独统计。</div>}
+          </Card>
+        </Col>
+        <Col xs={24} xl={8}>
+          <Card title="身份识别情况">
+            <div style={{ marginBottom: 16 }}>
+              <Row justify="space-between"><span>可识别调用方的请求</span><b>{identifiedShare === null ? '暂无数据' : `${identifiedShare}%`}</b></Row>
+              <Progress percent={identifiedShare ?? 0} showInfo={false} strokeColor={(identifiedShare ?? 0) >= 50 ? '#117865' : '#d96b20'} />
+              <div className="muted" style={{ fontSize: 12 }}>其余请求只能按来源 IP 归并。让网关透传 x-user-id、x-api-key 或 x-service-name 请求头可以提高识别率。</div>
+            </div>
+          </Card>
+          <Card title="识别规则（按顺序匹配）" style={{ marginTop: 16 }}>
+            <Table
+              columns={[
+                { title: '依据', dataIndex: 'source', key: 'source', render: (v: string, r: any) => <div><div>{v}</div><div className="muted" style={{ fontSize: 12 }}>{r.note}</div></div> },
+                { title: '识别为', dataIndex: 'type', key: 'type', width: 100, render: (v: string) => <Tag color={typeColor[v]}>{typeLabel[v] || v}</Tag> },
+                { title: '置信度', dataIndex: 'confidence', key: 'confidence', width: 70, render: (v: number) => v.toFixed(2) },
+              ]}
+              dataSource={data?.rules || []}
+              rowKey="order"
+              size="small"
               pagination={false}
             />
           </Card>
         </Col>
-        <Col xs={24} xl={9}>
-          <Card title="解析策略原则">
-            <Space direction="vertical" size={12}>
-              <div className="insight-row"><div className="insight-row__index">1</div><div><div className="section-title">优先使用显式身份</div><div className="muted">JWT、API Key、mTLS、网关 Consumer 等证据置信度最高。</div></div></div>
-              <div className="insight-row"><div className="insight-row__index">2</div><div><div className="section-title">弱关联必须标注置信度</div><div className="muted">IP + UA + Session 只能作为候选主体，不应被当成确定用户。</div></div></div>
-              <div className="insight-row"><div className="insight-row__index">3</div><div><div className="section-title">分类依赖注册表</div><div className="muted">内部、外部、Partner 和服务身份必须可配置、可审计、可人工纠偏。</div></div></div>
-            </Space>
-          </Card>
-        </Col>
       </Row>
-
-      <Card title="身份解析器配置">
-        <Table
-          columns={[
-            { title: '解析器', dataIndex: 'name', key: 'name' },
-            { title: '来源', dataIndex: 'source', key: 'source', render: (value: string) => <span className="asset-path">{value}</span> },
-            { title: '解析方式', dataIndex: 'parser', key: 'parser' },
-            { title: '主体类型', dataIndex: 'principal', key: 'principal' },
-            { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (value: string) => <Tag color={value === 'enabled' ? 'success' : 'warning'}>{value === 'enabled' ? '启用' : '观察'}</Tag> },
-          ]}
-          dataSource={extractorRows}
-          rowKey="id"
-          pagination={false}
-        />
-      </Card>
-
-      <Card title="身份注册表">
-        <Table
-          columns={[
-            { title: '注册表', dataIndex: 'name', key: 'name' },
-            { title: '责任团队', dataIndex: 'owner', key: 'owner', width: 160 },
-            { title: '记录数', dataIndex: 'records', key: 'records', width: 110, align: 'right' as const, render: (value: number) => value.toLocaleString() },
-            { title: '用途', dataIndex: 'use', key: 'use' },
-          ]}
-          dataSource={registryRows}
-          rowKey="name"
-          pagination={false}
-        />
-      </Card>
-
-      <Card title="输出字段示例">
-        <pre className="code-block">{`{
-  "principal_id": "partner-alipay-openapi",
-  "principal_type": "partner",
-  "identity_confidence": 0.96,
-  "network_zone": "partner_link",
-  "evidence": ["header.x-api-key", "partner_registry", "source_ip_whitelist"],
-  "governance_owner": "开放平台团队"
-}`}</pre>
-      </Card>
     </div>
   )
 }

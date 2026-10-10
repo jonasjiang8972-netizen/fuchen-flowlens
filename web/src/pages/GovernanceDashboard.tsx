@@ -1,56 +1,98 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Card, Col, Progress, Row, Space, Table, Tag } from 'antd'
-import { AlertOutlined, ApiOutlined, DatabaseOutlined, SafetyCertificateOutlined, TeamOutlined } from '@ant-design/icons'
+import { AlertOutlined, ApiOutlined, DatabaseOutlined, TeamOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { alertService, assetService } from '../services/api'
+import { alertService, assetService, callerService, coverageService } from '../services/api'
+import { closedStatuses, slaState } from '../utils/sla'
 
 interface Props { onNavigate: (page: string, id?: string) => void }
 
-const businessRows = [
-  { domain: '零售事业部 / 交易系统', apis: 42, highRisk: 8, ownerCoverage: 86, sla: 74, dataExposure: '高' },
-  { domain: '支付系统', apis: 18, highRisk: 5, ownerCoverage: 68, sla: 62, dataExposure: '高' },
-  { domain: '供应链 / 仓储', apis: 16, highRisk: 2, ownerCoverage: 91, sla: 88, dataExposure: '中' },
-  { domain: '推荐系统', apis: 21, highRisk: 1, ownerCoverage: 100, sla: 92, dataExposure: '低' },
-]
+const isOwned = (a: any) => a.claim_status === 'claimed' && !!a.owner
+const isSensitive = (a: any) => (a.sensitive_fields?.length || 0) > 0 || a.sensitivity_hint === 'high'
+const pct = (n: number, d: number) => (d > 0 ? Math.round((n / d) * 100) : null)
 
 export default function GovernanceDashboard({ onNavigate }: Props) {
   const [assets, setAssets] = useState<any[]>([])
   const [alerts, setAlerts] = useState<any[]>([])
+  const [trend, setTrend] = useState<any[]>([])
+  const [coverage, setCoverage] = useState<any>(null)
+  const [callers, setCallers] = useState<any>(null)
 
   useEffect(() => {
-    Promise.all([assetService.list(), alertService.list()]).then(([assetRows, alertRows]) => {
-      setAssets(assetRows)
-      setAlerts(alertRows)
-    })
+    Promise.all([assetService.list(), alertService.list(), alertService.trend(14), coverageService.summary(), callerService.list('partner')])
+      .then(([assetRows, alertRows, trendRows, cov, partnerCallers]) => {
+        setAssets(assetRows)
+        setAlerts(alertRows)
+        setTrend(trendRows)
+        setCoverage(cov)
+        setCallers(partnerCallers)
+      })
   }, [])
 
-  const highAlerts = alerts.filter(a => a.severity === 'critical' || a.severity === 'high')
-  const highAssets = assets.filter(a => a.sensitivity_hint === 'high')
-  const shadowAssets = assets.filter(a => a.status === 'shadow')
-  const unclaimedAssets = assets.filter(a => a.claim_status === 'unclaimed')
-  const externalAssets = assets.filter(a => a.host?.includes('api.example.com'))
-  const partnerRisk = 7
+  const openAlerts = alerts.filter(a => !closedStatuses.has(a.status))
+  const openHigh = openAlerts.filter(a => a.severity === 'critical' || a.severity === 'high')
+  const sensitiveAssets = assets.filter(isSensitive)
+  const unclaimed = assets.filter(a => !isOwned(a))
+  const shadow = assets.filter(a => a.status === 'shadow')
+  const overdue = openAlerts.filter(a => slaState(a).breached)
+  const closed = alerts.filter(a => closedStatuses.has(a.status))
+  const closedInTime = closed.filter(a => !slaState(a).breached)
+  const partners = callers?.stats?.callers_by_type?.partner || 0
+  const partnerRequests = callers?.stats?.requests_by_type?.partner || 0
+  const blindSpots: any[] = coverage?.blind_spots || []
+
+  const maturity = [
+    { label: '资产责任人覆盖', value: pct(assets.length - unclaimed.length, assets.length), note: `${assets.length - unclaimed.length}/${assets.length} 个接口已认领` },
+    { label: '采集器在线率', value: pct(coverage?.agents?.online || 0, coverage?.agents?.total || 0), note: `${coverage?.agents?.online || 0}/${coverage?.agents?.total || 0} 个采集器在线` },
+    { label: '调用方可识别率', value: coverage?.traffic?.events ? Math.round(coverage.traffic.identified_share * 100) : null, note: '请求中能识别出用户、合作方或服务的比例' },
+    { label: '处置时限达成率', value: pct(closedInTime.length, closed.length), note: `${closedInTime.length}/${closed.length} 个已关闭告警在时限内关闭` },
+  ]
+
+  // Assets grouped by host: the business systems the platform sees.
+  const hostRows = useMemo(() => {
+    const byHost = new Map<string, any[]>()
+    for (const a of assets) {
+      const host = a.host || '（未知主机）'
+      byHost.set(host, [...(byHost.get(host) || []), a])
+    }
+    return [...byHost.entries()].map(([host, rows]) => ({
+      host,
+      apis: rows.length,
+      sensitive: rows.filter(isSensitive).length,
+      unclaimed: rows.filter(a => !isOwned(a)).length,
+      ownerCoverage: pct(rows.filter(isOwned).length, rows.length) ?? 0,
+      dailyCalls: rows.reduce((sum, a) => sum + (a.daily_avg_calls || 0), 0),
+    })).sort((a, b) => b.sensitive - a.sensitive || b.apis - a.apis)
+  }, [assets])
 
   const trendOption = useMemo(() => ({
-    color: ['#c9352b', '#d96b20', '#117865'],
+    color: ['#c9352b', '#117865'],
     tooltip: { trigger: 'axis' },
     legend: { top: 0, right: 8, textStyle: { color: '#64748b' } },
     grid: { top: 42, left: 42, right: 18, bottom: 28 },
-    xAxis: { type: 'category', data: ['W1', 'W2', 'W3', 'W4', 'W5', 'W6'], axisLabel: { color: '#64748b' }, axisLine: { lineStyle: { color: '#d9e2ec' } } },
-    yAxis: { type: 'value', axisLabel: { color: '#64748b' }, splitLine: { lineStyle: { color: '#edf1f6' } } },
+    xAxis: { type: 'category', data: trend.map(d => d.date.slice(5)), axisLabel: { color: '#64748b' }, axisLine: { lineStyle: { color: '#d9e2ec' } } },
+    yAxis: { type: 'value', minInterval: 1, axisLabel: { color: '#64748b' }, splitLine: { lineStyle: { color: '#edf1f6' } } },
     series: [
-      { name: '高危风险', type: 'line', smooth: true, data: [18, 21, 16, 14, 12, highAlerts.length] },
-      { name: '未认领资产', type: 'line', smooth: true, data: [9, 8, 7, 6, 5, unclaimedAssets.length] },
-      { name: 'SLA达成率', type: 'line', smooth: true, data: [63, 68, 72, 75, 78, 82] },
+      { name: '新增严重/高危告警', type: 'line', data: trend.map(d => d.critical + d.high) },
+      { name: '关闭告警', type: 'line', data: trend.map(d => d.closed) },
     ],
-  }), [highAlerts.length, unclaimedAssets.length])
+  }), [trend])
+
+  const questions = [
+    { q: '有哪些未登记的影子 API？', a: `${shadow.length} 个`, page: 'assets' },
+    { q: '有多少合作方在调用？', a: `${partners} 个合作方，${partnerRequests.toLocaleString()} 次请求`, page: 'identity-center' },
+    { q: '有多少严重/高危告警未关闭？', a: `${openHigh.length} 个`, page: 'alerts' },
+    { q: '有多少资产无人认领？', a: `${unclaimed.length} 个，其中敏感接口 ${sensitiveAssets.filter(a => !isOwned(a)).length} 个`, page: 'assets' },
+    { q: '有多少告警超过处置时限？', a: `${overdue.length} 个`, page: 'work-orders' },
+    { q: '有哪些盲区会影响判断？', a: `${blindSpots.length} 项，其中高风险 ${blindSpots.filter(s => s.severity === 'high').length} 项`, page: 'coverage' },
+  ]
 
   return (
     <div className="commercial-page">
       <div className="page-heading">
         <div>
           <div className="page-heading__title">治理驾驶舱</div>
-          <div className="page-heading__desc">面向 IT / 安全 / 架构负责人，聚合 API 暴露面、数据风险、供应链风险和治理责任闭环。</div>
+          <div className="page-heading__desc">面向 IT / 安全 / 架构负责人，聚合 API 暴露面、数据风险、合作方调用和处置闭环。</div>
         </div>
         <Space>
           <Button onClick={() => onNavigate('coverage')}>查看盲区</Button>
@@ -59,50 +101,57 @@ export default function GovernanceDashboard({ onNavigate }: Props) {
       </div>
 
       <div className="metric-grid">
-        <Card className="metric-card"><div className="metric-card__label"><ApiOutlined /> API 总资产</div><div className="metric-card__value">{assets.length}</div><div className="metric-card__meta">{externalAssets.length} 个外部入口，{shadowAssets.length} 个影子 API</div></Card>
-        <Card className="metric-card"><div className="metric-card__label"><AlertOutlined /> 高危风险</div><div className="metric-card__value" style={{ color: 'var(--fl-critical)' }}>{highAlerts.length}</div><div className="metric-card__meta">影响 {highAssets.length} 个高敏 API</div></Card>
-        <Card className="metric-card"><div className="metric-card__label"><DatabaseOutlined /> 数据暴露面</div><div className="metric-card__value">{highAssets.length}</div><div className="metric-card__meta">高敏字段和未脱敏接口需持续治理</div></Card>
-        <Card className="metric-card"><div className="metric-card__label"><TeamOutlined /> 供应链风险</div><div className="metric-card__value">{partnerRisk}</div><div className="metric-card__meta">Partner API Key、外发字段、回调接口</div></Card>
+        <Card className="metric-card"><div className="metric-card__label"><ApiOutlined /> API 总资产</div><div className="metric-card__value">{assets.length}</div><div className="metric-card__meta">{hostRows.length} 个主机，{shadow.length} 个影子 API</div></Card>
+        <Card className="metric-card"><div className="metric-card__label"><AlertOutlined /> 未关闭高危风险</div><div className="metric-card__value" style={{ color: openHigh.length ? 'var(--fl-critical)' : undefined }}>{openHigh.length}</div><div className="metric-card__meta">{overdue.length} 个告警已超过处置时限</div></Card>
+        <Card className="metric-card"><div className="metric-card__label"><DatabaseOutlined /> 数据暴露面</div><div className="metric-card__value">{sensitiveAssets.length}</div><div className="metric-card__meta">涉及敏感字段的接口，{sensitiveAssets.filter(a => !isOwned(a)).length} 个无责任人</div></Card>
+        <Card className="metric-card"><div className="metric-card__label"><TeamOutlined /> 合作方调用</div><div className="metric-card__value">{partners}</div><div className="metric-card__meta">{partnerRequests.toLocaleString()} 次请求（平台启动以来）</div></Card>
       </div>
 
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={15}>
-          <Card title="治理趋势">
+          <Card title="近 14 天告警趋势">
             <ReactECharts option={trendOption} style={{ height: 320 }} />
           </Card>
         </Col>
         <Col xs={24} xl={9}>
           <Card title="治理成熟度">
             <Space direction="vertical" size={16} style={{ width: '100%' }}>
-              <div><Row justify="space-between"><span>资产 Owner 覆盖</span><b>82%</b></Row><Progress percent={82} strokeColor="#117865" /></div>
-              <div><Row justify="space-between"><span>采集覆盖率</span><b>76%</b></Row><Progress percent={76} strokeColor="#117865" /></div>
-              <div><Row justify="space-between"><span>身份解析置信度</span><b>88%</b></Row><Progress percent={88} strokeColor="#117865" /></div>
-              <div><Row justify="space-between"><span>处置 SLA 达成</span><b>82%</b></Row><Progress percent={82} strokeColor="#117865" /></div>
+              {maturity.map(m => (
+                <div key={m.label}>
+                  <Row justify="space-between"><span>{m.label}</span><b>{m.value === null ? '暂无数据' : `${m.value}%`}</b></Row>
+                  <Progress percent={m.value ?? 0} showInfo={false} strokeColor={(m.value ?? 0) >= 80 ? '#117865' : '#d96b20'} />
+                  <div className="muted" style={{ fontSize: 12 }}>{m.note}</div>
+                </div>
+              ))}
             </Space>
           </Card>
         </Col>
       </Row>
 
-      <Card title="业务线风险排行">
+      <Card title="按主机统计">
         <Table
           columns={[
-            { title: '业务域', dataIndex: 'domain', key: 'domain' },
+            { title: '主机', dataIndex: 'host', key: 'host' },
             { title: 'API 数', dataIndex: 'apis', key: 'apis', width: 90, align: 'right' as const },
-            { title: '高危风险', dataIndex: 'highRisk', key: 'risk', width: 100, align: 'right' as const, render: (v: number) => <span style={{ color: v > 4 ? 'var(--fl-critical)' : 'var(--fl-medium)' }}>{v}</span> },
-            { title: 'Owner 覆盖', dataIndex: 'ownerCoverage', key: 'owner', width: 160, render: (v: number) => <Progress percent={v} size="small" /> },
-            { title: 'SLA 达成', dataIndex: 'sla', key: 'sla', width: 160, render: (v: number) => <Progress percent={v} size="small" strokeColor={v < 70 ? 'var(--fl-high)' : 'var(--fl-success)'} /> },
-            { title: '数据暴露', dataIndex: 'dataExposure', key: 'data', width: 100, render: (v: string) => <Tag color={v === '高' ? 'red' : v === '中' ? 'gold' : 'blue'}>{v}</Tag> },
+            { title: '敏感接口', dataIndex: 'sensitive', key: 'sensitive', width: 100, align: 'right' as const, render: (v: number) => <span style={{ color: v > 0 ? 'var(--fl-high)' : undefined }}>{v}</span> },
+            { title: '无责任人', dataIndex: 'unclaimed', key: 'unclaimed', width: 100, align: 'right' as const },
+            { title: '责任人覆盖', dataIndex: 'ownerCoverage', key: 'owner', width: 160, render: (v: number) => <Progress percent={v} size="small" /> },
+            { title: '日均调用', dataIndex: 'dailyCalls', key: 'calls', width: 120, align: 'right' as const, render: (v: number) => v.toLocaleString() },
           ]}
-          dataSource={businessRows}
-          rowKey="domain"
-          pagination={false}
+          dataSource={hostRows}
+          rowKey="host"
+          pagination={hostRows.length > 10 ? { pageSize: 10 } : false}
+          locale={{ emptyText: '暂无资产：接入流量后自动发现' }}
         />
       </Card>
 
       <Card title="管理层关注问题">
         <div className="governance-question-grid">
-          {['哪些 API 对公网开放？', '哪些数据正在外发给 Partner？', '哪些业务线高危风险复发？', '哪些资产长期无人认领？', '哪些告警超过 SLA？', '哪些采集盲区会影响判断？'].map((item, index) => (
-            <div className="insight-row" key={item}><div className="insight-row__index">{index + 1}</div><div><div className="section-title">{item}</div><div className="muted">可从资产、身份、链路、数据和工单维度继续下钻。</div></div></div>
+          {questions.map((item, index) => (
+            <div className="insight-row" key={item.q} style={{ cursor: 'pointer' }} onClick={() => onNavigate(item.page)}>
+              <div className="insight-row__index">{index + 1}</div>
+              <div><div className="section-title">{item.q}</div><div className="muted"><Tag>{item.a}</Tag></div></div>
+            </div>
           ))}
         </div>
       </Card>

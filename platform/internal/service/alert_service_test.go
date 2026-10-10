@@ -64,14 +64,21 @@ func TestDetectionAlertsReopenAfterWindow(t *testing.T) {
 	}
 }
 
-func TestDetectionAlertsReopenAfterDisposal(t *testing.T) {
+func TestDetectionAlertsReopenAfterResolution(t *testing.T) {
 	s, now := newTestAlertService()
 	a := s.CreateDetectionAlert("FR-BOLA-001", "high", "t", "d", "1.2.3.4", "acct-1", 80, 0.8)
+	// While the alert is being handled, the ongoing attack keeps merging in
+	// (its timeline shows detections after the disposal).
 	s.alerts[a.ID].Status = "in_progress"
 	*now = now.Add(time.Minute)
+	if again := s.CreateDetectionAlert("FR-BOLA-001", "high", "t", "d", "1.2.3.4", "acct-1", 80, 0.8); again.ID != a.ID {
+		t.Fatal("repeat during handling opened a new alert")
+	}
+	// Once resolved, a recurrence is a new alert.
+	s.alerts[a.ID].Status = "resolved"
 	b := s.CreateDetectionAlert("FR-BOLA-001", "high", "t", "d", "1.2.3.4", "acct-1", 80, 0.8)
 	if b.ID == a.ID {
-		t.Fatal("repeat merged into an alert already under disposal")
+		t.Fatal("repeat merged into a resolved alert")
 	}
 
 	// acknowledged alerts still absorb repeats

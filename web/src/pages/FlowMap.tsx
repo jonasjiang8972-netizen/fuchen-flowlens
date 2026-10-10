@@ -1,148 +1,196 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Card, Col, Input, Row, Select, Space, Table, Tag } from 'antd'
-import { ApiOutlined, ClusterOutlined, DatabaseOutlined, LinkOutlined, SearchOutlined, WarningOutlined } from '@ant-design/icons'
+import { Card, Col, Input, Row, Space, Table, Tag } from 'antd'
+import { ApiOutlined, ClusterOutlined, LinkOutlined, SearchOutlined, WarningOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
-import { alertService, assetService } from '../services/api'
+import { assetService, topologyService } from '../services/api'
 
 interface Props {
   onNavigate: (page: string, id?: string) => void
 }
 
+const callerLabel: Record<string, string> = {
+  external_user: '外部用户',
+  partner: '合作方',
+  internal_service: '内部服务',
+  network_principal: '仅识别到 IP',
+  unknown: '未知调用方',
+}
+
+const kindColumn: Record<string, number> = { caller: 0, host: 1, service: 2 }
+const kindStyle: Record<string, any> = {
+  caller: { color: '#dbeafe', borderColor: '#2563a9' },
+  host: { color: '#ccfbf1', borderColor: '#117865' },
+  service: { color: '#ffffff', borderColor: '#64748b' },
+}
+
+const nodeName = (id: string) => {
+  const [kind, ...rest] = id.split(':')
+  const name = rest.join(':')
+  return kind === 'caller' ? callerLabel[name] || name : name
+}
+
 export default function FlowMap({ onNavigate }: Props) {
   const [assets, setAssets] = useState<any[]>([])
-  const [alerts, setAlerts] = useState<any[]>([])
+  const [topology, setTopology] = useState<any>(null)
   const [keyword, setKeyword] = useState('')
-  const [view, setView] = useState('business')
 
   useEffect(() => {
-    Promise.all([assetService.list(), alertService.list()]).then(([assetRows, alertRows]) => {
+    Promise.all([assetService.list(), topologyService.get()]).then(([assetRows, topo]) => {
       setAssets(assetRows)
-      setAlerts(alertRows)
+      setTopology(topo)
     })
   }, [])
 
-  const selectedAssets = useMemo(() => {
-    const kw = keyword.trim().toLowerCase()
-    return assets.filter(asset => !kw || [asset.path_normalized, asset.group_path, asset.host].some(v => String(v || '').toLowerCase().includes(kw))).slice(0, 8)
-  }, [assets, keyword])
+  const nodes: any[] = topology?.nodes || []
+  const edges: any[] = topology?.edges || []
+
+  // Three columns: caller types -> hosts -> backends. At most 12 nodes per
+  // column, busiest first, so the graph stays readable.
+  const graph = useMemo(() => {
+    const perColumn: Record<number, any[]> = { 0: [], 1: [], 2: [] }
+    for (const n of nodes) {
+      const col = kindColumn[n.kind]
+      if (col !== undefined && perColumn[col].length < 12) perColumn[col].push(n)
+    }
+    const shown = new Set<string>()
+    const data: any[] = []
+    const maxRequests = Math.max(1, ...nodes.map(n => n.requests))
+    for (const col of [0, 1, 2]) {
+      const list = perColumn[col]
+      list.forEach((n, i) => {
+        shown.add(n.id)
+        data.push({
+          id: n.id,
+          name: nodeName(n.id),
+          x: col * 300,
+          y: (i + 1) * (Math.max(360, list.length * 56) / (list.length + 1)),
+          label: { position: col === 2 ? 'right' : col === 0 ? 'left' : 'bottom' },
+          symbolSize: 28 + 30 * Math.sqrt(n.requests / maxRequests),
+          value: n.requests,
+          itemStyle: { ...kindStyle[n.kind], borderWidth: 2 },
+        })
+      })
+    }
+    const links = edges.filter(e => shown.has(e.from) && shown.has(e.to)).map(e => {
+      const errorRate = e.requests ? e.errors / e.requests : 0
+      return {
+        source: e.from,
+        target: e.to,
+        value: e.requests,
+        label: { show: true, formatter: `${e.requests.toLocaleString()}${errorRate >= 0.1 ? ` · 错误 ${(errorRate * 100).toFixed(0)}%` : ''}` },
+        lineStyle: { color: errorRate >= 0.1 ? '#c9352b' : '#94a3b8', width: 1 + 4 * Math.sqrt(e.requests / maxRequests) },
+      }
+    })
+    return { data, links }
+  }, [nodes, edges])
 
   const graphOption = {
-    tooltip: {},
+    tooltip: { formatter: (p: any) => (p.dataType === 'edge' ? `${nodeName(p.data.source)} → ${nodeName(p.data.target)}<br/>${p.data.value.toLocaleString()} 次请求` : `${p.data.name}<br/>${(p.data.value || 0).toLocaleString()} 次请求`) },
     series: [{
       type: 'graph',
       layout: 'none',
-      roam: false,
-      symbolSize: 54,
-      label: { show: true, color: '#142033', fontSize: 12 },
-      edgeLabel: { show: true, color: '#64748b', fontSize: 11, formatter: (params: any) => params.data.label || '' },
-      lineStyle: { color: '#94a3b8', width: 1.5, curveness: 0.08 },
-      data: [
-        { name: '外部用户', x: 40, y: 160, itemStyle: { color: '#dbeafe' } },
-        { name: 'API Gateway', x: 210, y: 160, itemStyle: { color: '#ccfbf1' } },
-        { name: 'BFF', x: 380, y: 160, itemStyle: { color: '#e0f2fe' } },
-        { name: '订单服务', x: 560, y: 95, itemStyle: { color: '#ffffff', borderColor: '#117865', borderWidth: 2 } },
-        { name: '支付服务', x: 560, y: 225, itemStyle: { color: '#fff7ed', borderColor: '#d96b20', borderWidth: 2 } },
-        { name: '风控服务', x: 740, y: 225, itemStyle: { color: '#fef2f2', borderColor: '#c9352b', borderWidth: 2 } },
-        { name: '敏感数据', x: 740, y: 95, itemStyle: { color: '#fee2e2' } },
-      ],
-      links: [
-        { source: '外部用户', target: 'API Gateway', label: '156k/min' },
-        { source: 'API Gateway', target: 'BFF', label: 'P95 42ms' },
-        { source: 'BFF', target: '订单服务', label: 'GET /order' },
-        { source: 'BFF', target: '支付服务', label: 'POST /checkout' },
-        { source: '支付服务', target: '风控服务', label: '缺少 trace' },
-        { source: '订单服务', target: '敏感数据', label: 'recipient_phone' },
-      ],
+      roam: true,
+      label: { show: true, position: 'bottom', color: '#142033', fontSize: 12 },
+      edgeLabel: { show: true, color: '#64748b', fontSize: 11 },
+      edgeSymbol: ['none', 'arrow'],
+      data: graph.data,
+      links: graph.links,
     }],
   }
 
-  const flowRows = [
-    { id: 'flow-001', name: '登录后查询订单并发起支付', entry: 'GET /api/v1/order/{id}', steps: 5, deviation: '风控调用缺少 trace_id', risk: 'high' },
-    { id: 'flow-002', name: '后台批量导出客户资料', entry: 'GET /api/v1/legacy/export', steps: 3, deviation: '文档缺失，含高敏字段', risk: 'critical' },
-    { id: 'flow-003', name: '移动端商品推荐浏览', entry: 'recommendation.ProductService/List', steps: 4, deviation: '调用频率高度规律', risk: 'medium' },
-    { id: 'flow-004', name: '管理员查看用户角色', entry: 'GET /api/v1/admin/users', steps: 2, deviation: '管理端点需核查调用来源', risk: 'high' },
-  ]
+  const callers = nodes.filter(n => n.kind === 'caller')
+  const hosts = nodes.filter(n => n.kind === 'host')
+  const backends = nodes.filter(n => n.kind === 'service')
+  const noisyEdges = edges.filter(e => e.requests >= 20 && e.errors / e.requests >= 0.1)
 
-  const columns = [
-    { title: '业务流程', dataIndex: 'name', key: 'name' },
-    { title: '入口 API', dataIndex: 'entry', key: 'entry', render: (value: string) => <span className="asset-path">{value}</span> },
-    { title: '节点数', dataIndex: 'steps', key: 'steps', width: 80, align: 'right' as const },
-    { title: '设计偏差 / 盲区', dataIndex: 'deviation', key: 'deviation' },
-    { title: '风险', dataIndex: 'risk', key: 'risk', width: 90, render: (value: string) => <Tag color={value === 'critical' ? 'red' : value === 'high' ? 'orange' : 'gold'}>{value}</Tag> },
-  ]
+  const edgeRows = edges.filter(e => {
+    const kw = keyword.trim().toLowerCase()
+    return !kw || `${nodeName(e.from)} ${nodeName(e.to)}`.toLowerCase().includes(kw)
+  }).map(e => ({ ...e, key: `${e.from}>${e.to}`, errorRate: e.requests ? e.errors / e.requests : 0 }))
+
+  const selectedAssets = useMemo(() => {
+    const kw = keyword.trim().toLowerCase()
+    return assets.filter(asset => !kw || [asset.path_normalized, asset.group_path, asset.host].some(v => String(v || '').toLowerCase().includes(kw))).slice(0, 20)
+  }, [assets, keyword])
 
   return (
     <div className="commercial-page">
       <div className="page-heading">
         <div>
           <div className="page-heading__title">调用链路</div>
-          <div className="page-heading__desc">合并入口流量、服务间调用和数据字段流转，用真实流量校验业务流程与接口设计是否一致。</div>
+          <div className="page-heading__desc">根据真实流量还原"调用方 → 访问主机 → 网关转发的后端服务"三段关系（平台启动以来）。</div>
         </div>
       </div>
 
       <div className="metric-grid">
         <Card className="metric-card">
-          <div className="metric-card__label"><LinkOutlined /> 已还原流程</div>
-          <div className="metric-card__value">42</div>
-          <div className="metric-card__meta">覆盖登录、下单、支付、导出等核心链路</div>
+          <div className="metric-card__label"><LinkOutlined /> 调用方类型</div>
+          <div className="metric-card__value">{callers.length}</div>
+          <div className="metric-card__meta">{callers.map(c => nodeName(c.id)).join('、') || '暂无流量'}</div>
         </Card>
         <Card className="metric-card">
-          <div className="metric-card__label"><ClusterOutlined /> 内外网合并链路</div>
-          <div className="metric-card__value">18</div>
-          <div className="metric-card__meta">入口 API 与内部服务依赖已关联</div>
+          <div className="metric-card__label"><ApiOutlined /> 访问主机</div>
+          <div className="metric-card__value">{hosts.length}</div>
+          <div className="metric-card__meta">请求中的 Host</div>
         </Card>
         <Card className="metric-card">
-          <div className="metric-card__label"><WarningOutlined /> 设计偏差</div>
-          <div className="metric-card__value">{flowRows.filter(r => r.risk === 'critical' || r.risk === 'high').length}</div>
-          <div className="metric-card__meta">文档缺失、trace 缺口、绕过校验</div>
+          <div className="metric-card__label"><ClusterOutlined /> 后端服务</div>
+          <div className="metric-card__value">{backends.length}</div>
+          <div className="metric-card__meta">网关路由名或转发地址</div>
         </Card>
         <Card className="metric-card">
-          <div className="metric-card__label"><DatabaseOutlined /> 数据流转节点</div>
-          <div className="metric-card__value">27</div>
-          <div className="metric-card__meta">含敏感字段的跨服务流转路径</div>
+          <div className="metric-card__label"><WarningOutlined /> 高错误率链路</div>
+          <div className="metric-card__value" style={{ color: noisyEdges.length ? 'var(--fl-critical)' : undefined }}>{noisyEdges.length}</div>
+          <div className="metric-card__meta">错误率 ≥ 10% 且请求 ≥ 20 次</div>
         </Card>
       </div>
 
       <div className="filter-bar">
-        <Input prefix={<SearchOutlined />} allowClear value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="搜索入口 API、服务、分组" style={{ width: 320 }} />
-        <div className="filter-bar__controls">
-          <Select value={view} onChange={setView} style={{ width: 160 }} options={[
-            { value: 'business', label: '业务流程视角' },
-            { value: 'service', label: '服务依赖视角' },
-            { value: 'data', label: '数据流向视角' },
-          ]} />
-          <Tag color="processing">弱关联: session + account + 5min window</Tag>
-        </div>
+        <Input prefix={<SearchOutlined />} allowClear value={keyword} onChange={e => setKeyword(e.target.value)} placeholder="搜索调用方、主机、服务或 API" style={{ width: 320 }} />
+        {topology?.truncated && <Tag color="warning">链路过多，只统计了前 5000 条</Tag>}
       </div>
 
       <Row gutter={[16, 16]}>
         <Col xs={24} xl={16}>
-          <Card title="内外网调用拓扑">
-            <ReactECharts option={graphOption} style={{ height: 360 }} />
+          <Card title="调用拓扑">
+            {graph.data.length ? <ReactECharts option={graphOption} style={{ height: Math.max(380, Math.min(12, nodes.filter(n => n.kind === 'service').length) * 56 + 40) }} />
+              : <div style={{ height: 380, display: 'flex', alignItems: 'center', justifyContent: 'center' }} className="muted">暂无流量：接入采集器后自动生成</div>}
           </Card>
         </Col>
         <Col xs={24} xl={8}>
-          <Card title="当前视角解释">
+          <Card title="如何阅读">
             <Space direction="vertical" size={12}>
-              <div className="insight-row"><div className="insight-row__index">1</div><div><div className="section-title">外部入口与内部服务合并</div><div className="muted">从网关日志、Agent 采集和服务元数据中关联入口 API 与下游服务。</div></div></div>
-              <div className="insight-row"><div className="insight-row__index">2</div><div><div className="section-title">设计偏差标注</div><div className="muted">文档缺失、trace 缺口、敏感字段流转和绕过校验会被标为治理项。</div></div></div>
-              <div className="insight-row"><div className="insight-row__index">3</div><div><div className="section-title">面向开发的影响分析</div><div className="muted">帮助判断改动某个接口会影响哪些调用方、流程和下游服务。</div></div></div>
+              <div className="insight-row"><div className="insight-row__index">1</div><div><div className="section-title">左：调用方类型</div><div className="muted">按请求头识别出的外部用户、合作方、内部服务；识别不到时按来源 IP 归为一类。</div></div></div>
+              <div className="insight-row"><div className="insight-row__index">2</div><div><div className="section-title">中：访问主机</div><div className="muted">请求的 Host。节点越大请求越多，红色连线表示错误率 ≥ 10%。</div></div></div>
+              <div className="insight-row"><div className="insight-row__index">3</div><div><div className="section-title">右：后端服务</div><div className="muted">网关日志中的路由名或转发地址。服务之间的内部调用需要接入链路追踪（trace）后才能还原。</div></div></div>
             </Space>
           </Card>
         </Col>
       </Row>
 
-      <Card title="业务流程与一致性偏差">
-        <Table columns={columns} dataSource={flowRows} rowKey="id" pagination={false} />
+      <Card title="链路明细">
+        <Table
+          columns={[
+            { title: '从', dataIndex: 'from', key: 'from', render: (v: string) => nodeName(v) },
+            { title: '到', dataIndex: 'to', key: 'to', render: (v: string) => nodeName(v) },
+            { title: '请求数', dataIndex: 'requests', key: 'requests', width: 120, align: 'right' as const, render: (v: number) => v.toLocaleString() },
+            { title: '错误率', dataIndex: 'errorRate', key: 'errorRate', width: 110, align: 'right' as const, render: (v: number) => <span style={{ color: v >= 0.1 ? 'var(--fl-critical)' : undefined }}>{(v * 100).toFixed(1)}%</span> },
+          ]}
+          dataSource={edgeRows}
+          rowKey="key"
+          pagination={edgeRows.length > 10 ? { pageSize: 10 } : false}
+          locale={{ emptyText: '暂无流量' }}
+        />
       </Card>
 
       <Card title="相关 API 资产">
         <Table
           columns={[
             { title: 'API', dataIndex: 'path_normalized', key: 'path', render: (value: string, row: any) => <span className="asset-path">{row.method} {value}</span> },
+            { title: '主机', dataIndex: 'host', key: 'host' },
             { title: '服务/分组', dataIndex: 'group_path', key: 'group' },
             { title: '敏感度', dataIndex: 'sensitivity_hint', key: 'sensitivity', render: (value: string) => <Tag color={value === 'high' ? 'red' : 'blue'}>{value}</Tag> },
-            { title: '状态', dataIndex: 'status', key: 'status', render: (value: string) => <Tag>{value}</Tag> },
+            { title: '状态', dataIndex: 'status', key: 'status', render: (value: string) => <Tag>{value === 'shadow' ? '影子 API' : value}</Tag> },
           ]}
           dataSource={selectedAssets}
           rowKey="asset_id"

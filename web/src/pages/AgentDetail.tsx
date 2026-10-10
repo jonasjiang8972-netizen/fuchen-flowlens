@@ -27,7 +27,7 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
     })
   }, [agentId])
 
-  if (!agent) return <div style={{ color: '#F0F4F8' }}>加载中...</div>
+  if (!agent) return <div style={{ color: 'var(--fl-text)' }}>加载中...</div>
 
   // Heartbeat sample times (every ~10 s) label the trend charts.
   const sampleLabels: string[] = (detail?.metrics?.sample_times || []).map((t: string) =>
@@ -39,7 +39,7 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
     const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60)
     return d ? `${d} 天 ${h} 小时` : h ? `${h} 小时 ${m} 分钟` : `${m} 分钟`
   })()
-  const emptyChart = <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94A3B8' }}>暂无心跳数据（采集器每 10 秒上报一次）</div>
+  const emptyChart = <div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--fl-text-muted)' }}>暂无心跳数据（采集器每 10 秒上报一次）</div>
 
   const qpsOption = {
     backgroundColor: 'transparent',
@@ -47,14 +47,14 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
     xAxis: {
       type: 'category',
       data: sampleLabels,
-      axisLine: { lineStyle: { color: '#1E3A5F' } },
-      axisLabel: { color: '#94A3B8', fontSize: 10 },
+      axisLine: { lineStyle: { color: 'var(--fl-border)' } },
+      axisLabel: { color: 'var(--fl-text-muted)', fontSize: 10 },
     },
     yAxis: {
       type: 'value',
-      axisLine: { lineStyle: { color: '#1E3A5F' } },
-      axisLabel: { color: '#94A3B8' },
-      splitLine: { lineStyle: { color: '#1E3A5F' } },
+      axisLine: { lineStyle: { color: 'var(--fl-border)' } },
+      axisLabel: { color: 'var(--fl-text-muted)' },
+      splitLine: { lineStyle: { color: 'var(--fl-border)' } },
     },
     series: [{
       name: 'QPS', type: 'line', smooth: true,
@@ -72,14 +72,14 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
     xAxis: {
       type: 'category',
       data: sampleLabels,
-      axisLine: { lineStyle: { color: '#1E3A5F' } },
-      axisLabel: { color: '#94A3B8', fontSize: 10 },
+      axisLine: { lineStyle: { color: 'var(--fl-border)' } },
+      axisLabel: { color: 'var(--fl-text-muted)', fontSize: 10 },
     },
     yAxis: {
       type: 'value', max: 100,
-      axisLine: { lineStyle: { color: '#1E3A5F' } },
-      axisLabel: { color: '#94A3B8' },
-      splitLine: { lineStyle: { color: '#1E3A5F' } },
+      axisLine: { lineStyle: { color: 'var(--fl-border)' } },
+      axisLabel: { color: 'var(--fl-text-muted)' },
+      splitLine: { lineStyle: { color: 'var(--fl-border)' } },
     },
     series: [{
       name: 'CPU %', type: 'line', smooth: true,
@@ -114,8 +114,8 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
 
       <Row gutter={[16, 16]}>
         <Col span={24}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>采集器基本信息</span>}>
-            <Descriptions bordered column={3} size="small" labelStyle={{ color: '#94A3B8', background: '#132F4C' }} contentStyle={{ color: '#F0F4F8' }}>
+          <Card className="dashboard-card" title={<span style={{ color: 'var(--fl-text)' }}>采集器基本信息</span>}>
+            <Descriptions bordered column={3} size="small" labelStyle={{ color: 'var(--fl-text-muted)', background: 'var(--fl-surface-muted)' }} contentStyle={{ color: 'var(--fl-text)' }}>
               <Descriptions.Item label="采集器ID">{agent.agent_id}</Descriptions.Item>
               <Descriptions.Item label="主机名">{agent.hostname}</Descriptions.Item>
               <Descriptions.Item label="状态">
@@ -142,12 +142,12 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
 
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col span={12}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>QPS 趋势</span>}>
+          <Card className="dashboard-card" title={<span style={{ color: 'var(--fl-text)' }}>QPS 趋势</span>}>
             {hasSamples ? <ReactECharts option={qpsOption} style={{ height: '200px' }} /> : emptyChart}
           </Card>
         </Col>
         <Col span={12}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>CPU 使用率</span>}>
+          <Card className="dashboard-card" title={<span style={{ color: 'var(--fl-text)' }}>CPU 使用率</span>}>
             {hasSamples ? <ReactECharts option={cpuOption} style={{ height: '200px' }} /> : emptyChart}
           </Card>
         </Col>
@@ -155,8 +155,8 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
 
       <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
         <Col span={12}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>运行配置（采集器注册时上报）</span>}>
-            <Descriptions bordered column={1} size="small" labelStyle={{ color: '#94A3B8' }} contentStyle={{ color: '#F0F4F8' }}>
+          <Card className="dashboard-card" title={<span style={{ color: 'var(--fl-text)' }}>运行配置（采集器注册时上报）</span>}>
+            <Descriptions bordered column={1} size="small" labelStyle={{ color: 'var(--fl-text-muted)' }} contentStyle={{ color: 'var(--fl-text)' }}>
               <Descriptions.Item label="采集模式">{detail?.config?.mode || '-'}</Descriptions.Item>
               {detail?.config?.gateway_log_path ? (
                 <>
@@ -173,7 +173,7 @@ export default function AgentDetail({ agentId, onBack, onNavigate }: Props) {
           </Card>
         </Col>
         <Col span={12}>
-          <Card className="dashboard-card" title={<span style={{ color: '#F0F4F8' }}>运行事件（平台记录）</span>}>
+          <Card className="dashboard-card" title={<span style={{ color: 'var(--fl-text)' }}>运行事件（平台记录）</span>}>
             <Table columns={logColumns} dataSource={detail?.recent_logs || []} rowKey={(_: any, i?: number) => `${i ?? 0}`} pagination={false} size="small"
               locale={{ emptyText: '平台重启后暂无事件' }} />
           </Card>

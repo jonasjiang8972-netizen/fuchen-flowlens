@@ -42,12 +42,14 @@ export default function Dashboard({ onNavigate }: Props) {
   const [coverage, setCoverage] = useState({ total_agents: 0, online: 0, degraded: 0, offline: 0 })
   const [assets, setAssets] = useState<any[]>([])
   const [alerts, setAlerts] = useState<any[]>([])
+  const [trend, setTrend] = useState<any[]>([])
 
   useEffect(() => {
-    Promise.all([coverageService.agents(), assetService.list(), alertService.list()]).then(([cov, assetRows, alertRows]) => {
+    Promise.all([coverageService.agents(), assetService.list(), alertService.list(), alertService.trend(7)]).then(([cov, assetRows, alertRows, trendRows]) => {
       setCoverage(cov)
       setAssets(assetRows)
       setAlerts(alertRows)
+      setTrend(trendRows)
     })
   }, [])
 
@@ -75,14 +77,15 @@ export default function Dashboard({ onNavigate }: Props) {
   }, [highAssets, shadowAssets])
 
   const chartText = '#64748b'
+  // Alerts raised per day by severity, and alerts closed per day.
   const trendOption = {
-    color: ['#c9352b', '#d96b20', '#117865'],
+    color: ['#c9352b', '#d96b20', '#b7791f', '#117865'],
     tooltip: { trigger: 'axis' },
     legend: { top: 0, right: 8, textStyle: { color: chartText } },
     grid: { top: 42, right: 18, bottom: 28, left: 42 },
     xAxis: {
       type: 'category',
-      data: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
+      data: trend.map(d => d.date.slice(5)),
       axisLabel: { color: chartText },
       axisLine: { lineStyle: { color: '#d9e2ec' } },
     },
@@ -92,9 +95,10 @@ export default function Dashboard({ onNavigate }: Props) {
       splitLine: { lineStyle: { color: '#edf1f6' } },
     },
     series: [
-      { name: '严重', type: 'line', smooth: true, data: [3, 4, 2, 5, 4, 2, criticalAlerts.length], areaStyle: { opacity: 0.06 } },
-      { name: '高危', type: 'line', smooth: true, data: [8, 12, 7, 16, 11, 8, alerts.filter(a => a.severity === 'high').length], areaStyle: { opacity: 0.06 } },
-      { name: '待处理', type: 'line', smooth: true, data: [22, 26, 18, 31, 24, 20, openAlerts.length], areaStyle: { opacity: 0.06 } },
+      { name: '新增严重', type: 'line', data: trend.map(d => d.critical), areaStyle: { opacity: 0.06 } },
+      { name: '新增高危', type: 'line', data: trend.map(d => d.high), areaStyle: { opacity: 0.06 } },
+      { name: '新增中低危', type: 'line', data: trend.map(d => d.medium + d.low), areaStyle: { opacity: 0.06 } },
+      { name: '关闭', type: 'line', data: trend.map(d => d.closed), lineStyle: { type: 'dashed' } },
     ],
   }
 
@@ -207,7 +211,12 @@ export default function Dashboard({ onNavigate }: Props) {
 
         <Card title="运营状态">
           <Space direction="vertical" size={14} style={{ width: '100%' }}>
-            <Row justify="space-between"><Col className="muted"><CheckCircleOutlined /> 数据链路</Col><Col><Tag color="success">正常</Tag></Col></Row>
+            <Row justify="space-between"><Col className="muted"><CheckCircleOutlined /> 数据链路</Col><Col>{
+              coverage.total_agents === 0 ? <Tag>未接入采集器</Tag>
+                : coverage.online === 0 ? <Tag color="error">无在线采集器</Tag>
+                  : abnormalAgents > 0 ? <Tag color="warning">部分异常</Tag>
+                    : <Tag color="success">正常</Tag>
+            }</Col></Row>
             <Row justify="space-between"><Col className="muted"><ClockCircleOutlined /> 最新发现</Col><Col>{shadowAssets.length} 个影子 API</Col></Row>
             <Row justify="space-between"><Col className="muted"><AlertOutlined /> 处置 SLA</Col><Col>{openAlerts.length > 5 ? <Tag color="warning">需关注</Tag> : <Tag color="success">稳定</Tag>}</Col></Row>
             <Row justify="space-between"><Col className="muted"><CloudServerOutlined /> 采集异常</Col><Col>{abnormalAgents} 个节点</Col></Row>
@@ -216,7 +225,7 @@ export default function Dashboard({ onNavigate }: Props) {
       </div>
 
       <div className="two-column-grid">
-        <Card title="近 7 天风险趋势">
+        <Card title="近 7 天告警趋势">
           <ReactECharts option={trendOption} style={{ height: 300 }} />
         </Card>
         <Card title="告警等级分布">

@@ -50,6 +50,19 @@ export const coverageService = {
       offline: rows.filter(a => a.status === 'offline').length,
     }
   }, { total_agents: 0, online: 0, degraded: 0, offline: 0 }),
+  summary: () => read(() => request<any>('/coverage/summary'), mockCoverageSummary, null),
+}
+
+// ─── Traffic topology ────────────────────────────────────────────
+
+export const topologyService = {
+  get: () => read(() => request<any>('/topology'), mockTopology, null),
+}
+
+// ─── Callers ─────────────────────────────────────────────────────
+
+export const callerService = {
+  list: (type?: string) => read(() => request<any>(`/callers${type ? `?type=${encodeURIComponent(type)}` : ''}`), mockCallers, null),
 }
 
 // ─── Assets ──────────────────────────────────────────────────────
@@ -67,11 +80,16 @@ export const assetService = {
 
 export const alertService = {
   list: () => read(async () => (await request<{ items: any[] }>('/alerts')).items, generateMockAlerts, []),
-  detail: (id: string) => read(() => request<any>(`/alerts/${id}`), () => ({
-    alert_id: id,
-    timeline: id === 'alt-001' ? [{ time: new Date(Date.now() - 3600000).toISOString(), event: '基线建立', detail: '完成' }] : [],
-    related_alerts: [], raw_data: {},
-  }), { alert_id: id, timeline: [], related_alerts: [], raw_data: {} }),
+  detail: (id: string) => read(() => request<any>(`/alerts/${id}`), () => {
+    const a: any = generateMockAlerts().find(x => x.alert_id === id) || { alert_id: id, title: '告警', timestamp: new Date().toISOString(), severity: 'high', status: 'open' }
+    return {
+      ...a,
+      timeline: [{ time: a.timestamp, event: '告警产生', detail: a.title }],
+      related_alerts: [],
+      raw_data: { occurrences: '1', first_seen: a.timestamp, last_seen: a.timestamp, duration: '0s' },
+    }
+  }, { alert_id: id, timeline: [], related_alerts: [], raw_data: {} }),
+  trend: (days = 7) => read(async () => (await request<{ items: any[] }>(`/alerts/trend?days=${days}`)).items, () => mockTrend(days), []),
 }
 
 // ─── Actions (throw on failure) ──────────────────────────────────
@@ -79,8 +97,20 @@ export const alertService = {
 export const claimAsset = (assetId: string, owner: string) =>
   write(() => request(`/assets/${assetId}/claim`, { method: 'POST', body: JSON.stringify({ owner }) }), { status: 'ok' })
 
-export const executeAlertAction = (alertId: string, action: string) =>
-  write(() => request(`/alerts/${alertId}/${action}`, { method: 'POST', body: '{}' }), { status: 'ok', action })
+// Handling actions: acknowledge, ip_block, rate_limit, account_lock, resolve,
+// false_positive, reopen. The platform returns the updated alert.
+export const executeAlertAction = (alertId: string, action: string, note = '') =>
+  write(() => request<any>(`/alerts/${alertId}/${action}`, { method: 'POST', body: JSON.stringify({ note }) }), null as any)
+
+export const alertActionStatus: Record<string, string> = {
+  acknowledge: 'acknowledged', ip_block: 'in_progress', rate_limit: 'in_progress', account_lock: 'in_progress',
+  resolve: 'resolved', false_positive: 'false_positive', reopen: 'open',
+}
+
+export const alertActionLabel: Record<string, string> = {
+  acknowledge: '确认告警', ip_block: '封禁来源 IP', rate_limit: '限流', account_lock: '锁定账号',
+  resolve: '标记已解决', false_positive: '标记误报', reopen: '重新打开',
+}
 
 // ─── Detection policy ────────────────────────────────────────────
 
@@ -111,6 +141,65 @@ function mockAgentDetail(id: string) {
     config: { mode: 'gateway_log', gateway_log_path: '/var/log/gateway/access.log', gateway_log_format: 'json', capture_headers: true, capture_body: true, max_body_size_kb: 64 },
     recent_logs: [{ level: 'info', message: '采集器注册：主机 demo-host，模式 gateway_log，版本 0.7.0', timestamp: new Date(now - 259200000).toISOString() }],
     collected_apis: 30,
+  }
+}
+
+// ─── Mock Data Fallback (static demo build only) ────────────────
+
+function mockTrend(days: number) {
+  const out = []
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400000)
+    out.push({ date: d.toISOString().slice(0, 10), critical: (i * 3) % 4, high: 4 + (i * 5) % 7, medium: 6 + (i * 2) % 5, low: 2, closed: 5 + (i * 7) % 6 })
+  }
+  return out
+}
+
+function mockTopology() {
+  const n = (id: string, kind: string, requests: number) => ({ id: `${kind}:${id}`, kind, requests })
+  const e = (from: string, to: string, requests: number, errors: number) => ({ from, to, requests, errors })
+  return {
+    since: new Date(Date.now() - 86400000).toISOString(),
+    truncated: false,
+    nodes: [n('external_user', 'caller', 18230), n('partner', 'caller', 9120), n('network_principal', 'caller', 380),
+      n('api.example.com', 'host', 24100), n('open.example.com', 'host', 3630), n('user-svc', 'service', 12100), n('order-svc', 'service', 11800), n('partner-gw', 'service', 3630)],
+    edges: [e('caller:external_user', 'host:api.example.com', 18230, 412), e('caller:partner', 'host:open.example.com', 3630, 31), e('caller:partner', 'host:api.example.com', 5490, 12),
+      e('caller:network_principal', 'host:api.example.com', 380, 120), e('host:api.example.com', 'service:user-svc', 12100, 300), e('host:api.example.com', 'service:order-svc', 11800, 244), e('host:open.example.com', 'service:partner-gw', 3630, 31)],
+  }
+}
+
+function mockCoverageSummary() {
+  return {
+    agents: { total: 9, online: 7, degraded: 1, offline: 1 },
+    assets: { total: 42, unclaimed: 6, stale: 3, sensitive: 11, sensitive_unclaimed: 2 },
+    traffic: { since: new Date(Date.now() - 86400000).toISOString(), events: 182340, identified_share: 0.68, body_share: 0.04 },
+    blind_spots: [
+      { type: '采集器离线', area: 'agent-offline-01', impact: 'vm-legacy-01 超过 5 分钟没有心跳，该采集点的流量不可见', severity: 'high', fix: '检查采集器进程、到平台的网络和 Agent 令牌' },
+      { type: '敏感接口无责任人', area: '2 个接口', impact: '涉及敏感字段的接口出现风险时无法自动分派', severity: 'high', fix: '在 API 资产中认领并填写责任人', link: 'assets' },
+      { type: '未采集响应体', area: '96% 的请求', impact: '敏感数据检测只能依据 URL 参数', severity: 'medium', fix: '网关访问日志不含响应体；需要时使用能采集响应体的采集方式', link: 'data-gov' },
+    ],
+  }
+}
+
+function mockCallers() {
+  const now = Date.now()
+  const row = (id: string, type: string, role: string, confidence: number, evidence: string, requests: number, errors: number, endpoints: number, alerts = 0) =>
+    ({ caller_id: id, type, role, confidence, evidence, requests, errors, endpoints, source_ips: ['203.0.113.18'], first_seen: new Date(now - 86400000).toISOString(), last_seen: new Date(now - 60000).toISOString(), open_alerts: alerts })
+  return {
+    items: [
+      row('usr-88213', 'external_user', 'user', 0.92, 'gateway_header', 18230, 412, 24, 1),
+      row('partner:sm3:9f2c41ab07de', 'partner', 'partner', 0.9, 'api_key', 9120, 31, 6),
+      row('svc:order-api', 'internal_service', 'service', 0.95, 'service_header', 6400, 2, 9),
+      row('ip:198.51.100.23', 'network_principal', 'external', 0.55, 'source_ip', 380, 120, 3, 2),
+    ],
+    stats: { since: new Date(now - 86400000).toISOString(), callers: 4, requests: 34130, callers_by_type: { external_user: 1, partner: 1, internal_service: 1, network_principal: 1 }, requests_by_type: { external_user: 18230, partner: 9120, internal_service: 6400, network_principal: 380 }, untracked_requests: 0 },
+    rules: [
+      { order: 1, type: 'external_user', source: '请求头 x-user-id / x-account-id / x-authenticated-user', confidence: 0.92, note: '网关认证后透传的用户身份' },
+      { order: 2, type: 'partner', source: '请求头 x-api-key / x-client-id / x-app-id', confidence: 0.9, note: '按 API Key 区分合作方' },
+      { order: 3, type: 'internal_service', source: '请求头 x-service-name / x-caller-service', confidence: 0.95, note: '服务间调用声明的调用方' },
+      { order: 4, type: 'external_user', source: 'URL 参数 user_id / account_id / uid', confidence: 0.78, note: '参数可被调用方伪造，置信度较低' },
+      { order: 5, type: 'network_principal', source: '来源 IP', confidence: 0.55, note: '以上都没有时，按来源 IP 归并' },
+    ],
   }
 }
 

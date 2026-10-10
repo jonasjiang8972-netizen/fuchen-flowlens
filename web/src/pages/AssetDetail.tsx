@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Card, Col, Descriptions, Progress, Row, Space, Table, Tag, Timeline } from 'antd'
-import { ArrowLeftOutlined, ApiOutlined, AuditOutlined, DatabaseOutlined, DeploymentUnitOutlined, GlobalOutlined } from '@ant-design/icons'
+import { ArrowLeftOutlined, ApiOutlined, DatabaseOutlined, DeploymentUnitOutlined, GlobalOutlined } from '@ant-design/icons'
 import ReactECharts from 'echarts-for-react'
 import { assetService } from '../services/api'
+import { sensitiveLabel, sensitiveType } from '../utils/sensitive'
+
+const changeLabel: Record<string, string> = {
+  discovered: '首次发现',
+  sensitive_field_added: '新出现敏感字段',
+  owner_changed: '责任人变更',
+}
 
 interface Props {
   assetId: string
@@ -84,6 +91,15 @@ export default function AssetDetail({ assetId, onBack, onNavigate }: Props) {
     { title: '状态', dataIndex: 'status', key: 'status', width: 90, render: (value: string) => <Tag>{value}</Tag> },
   ]
 
+  const openAlerts = (detail?.alerts || []).filter((a: any) => a.status !== 'resolved' && a.status !== 'false_positive')
+  const owned = asset.claim_status === 'claimed' && !!asset.owner
+  const governanceChecks = [
+    { label: '已认领责任人', ok: owned },
+    { label: '敏感字段有人负责（无敏感字段也算通过）', ok: !asset.sensitive_fields?.length || owned },
+    { label: '没有未关闭的告警', ok: openAlerts.length === 0 },
+    { label: '24 小时内有流量', ok: !!asset.last_seen && Date.now() - new Date(asset.last_seen).getTime() < 86400000 },
+  ]
+
   const flowNodes = [
     { title: '外部调用方', desc: asset.source_distribution?.external || '外部入口' },
     { title: 'API Gateway', desc: asset.host },
@@ -101,7 +117,6 @@ export default function AssetDetail({ assetId, onBack, onNavigate }: Props) {
           <div className="page-heading__desc">API 安全档案：生产暴露面、调用画像、数据风险、关联事件和责任归属。</div>
         </div>
         <Space>
-          <Button icon={<AuditOutlined />}>发起治理</Button>
           <Button type="primary" icon={<DeploymentUnitOutlined />} onClick={() => onNavigate('flow-map')}>查看链路</Button>
         </Space>
       </div>
@@ -174,14 +189,16 @@ export default function AssetDetail({ assetId, onBack, onNavigate }: Props) {
         <Card title="数据字段与脱敏状态">
           <Space wrap>
             {(asset.sensitive_fields || []).map((field: string) => (
-              <Tag key={field} color="red">{field} · 未确认脱敏</Tag>
+              <Tag key={field} color="red">{field}{sensitiveType(field) ? ` · ${sensitiveLabel(sensitiveType(field))}` : ''}</Tag>
             ))}
             {!asset.sensitive_fields?.length && <span className="muted">未发现敏感字段</span>}
           </Space>
           <div style={{ marginTop: 16 }}>
             <div className="section-title">治理完整度</div>
-            <Progress percent={asset.owner ? 78 : 46} strokeColor="#117865" />
-            <div className="muted">综合 owner、文档、敏感字段、告警关联和调用覆盖情况计算。</div>
+            <Progress percent={Math.round((governanceChecks.filter(c => c.ok).length / governanceChecks.length) * 100)} strokeColor="#117865" />
+            <Space direction="vertical" size={2} style={{ marginTop: 8 }}>
+              {governanceChecks.map(c => <span key={c.label} className="muted">{c.ok ? '✓' : '✗'} {c.label}</span>)}
+            </Space>
           </div>
         </Card>
 
@@ -199,6 +216,24 @@ export default function AssetDetail({ assetId, onBack, onNavigate }: Props) {
           </Card>
         </Col>
       </Row>
+
+      <div className="two-column-grid">
+        <Card title="变更记录">
+          {detail?.change_history?.length ? (
+            <Timeline items={detail.change_history.map((c: any) => ({
+              color: c.severity === 'high' ? 'red' : '#117865',
+              children: <div><div className="section-title">{changeLabel[c.change_type] || c.change_type}</div><div className="muted">{c.after}</div><div className="muted">{new Date(c.detected_at).toLocaleString('zh-CN')}</div></div>,
+            }))} />
+          ) : <span className="muted">暂无变更记录</span>}
+        </Card>
+        <Card title="同一服务下的其他接口">
+          {detail?.related_assets?.length ? (
+            <Space wrap>
+              {detail.related_assets.map((id: string) => <Tag key={id} style={{ cursor: 'pointer' }} onClick={() => onNavigate('asset-detail', id)}>{id}</Tag>)}
+            </Space>
+          ) : <span className="muted">无</span>}
+        </Card>
+      </div>
     </div>
   )
 }

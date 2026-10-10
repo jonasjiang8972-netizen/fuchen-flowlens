@@ -238,6 +238,7 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	sec.GET("/assets/:id", read, srv.GetAssetHandler)
 	sec.POST("/assets/:id/claim", perm("security", iam.PermAssetManage), srv.ClaimAssetHandler)
 	sec.GET("/alerts", read, srv.ListAlertsHandler)
+	sec.GET("/alerts/trend", read, srv.AlertTrendHandler)
 	sec.GET("/alerts/:id", read, srv.GetAlertHandler)
 	sec.POST("/alerts/:id/:action", perm("security", iam.PermAlertHandle), srv.AlertActionHandler)
 	sec.POST("/detect/access", perm("security", iam.PermRuleManage), srv.RecordAccessHandler)
@@ -250,6 +251,9 @@ func setupRouter(srv *server.PlatformServer, cfg config) *gin.Engine {
 	sec.GET("/sensitive/flow-map", read, srv.FlowMapHandler)
 	// Collection coverage as seen by security teams (aggregate only).
 	sec.GET("/coverage/agents", read, srv.AgentHealthSummaryHandler)
+	sec.GET("/coverage/summary", read, srv.CoverageSummaryHandler)
+	sec.GET("/callers", read, srv.ListCallersHandler)
+	sec.GET("/topology", read, srv.TopologyHandler)
 
 	// ── Management console (系统管理后台): platform administration ──
 	adm := r.Group("/api/v1/admin", session, middleware.Audit(auditSvc, "admin"))

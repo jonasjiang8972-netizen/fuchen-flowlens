@@ -165,18 +165,18 @@ func TestAlertActionRollsBackWhenSaveFails(t *testing.T) {
 	repo := newMemRepo()
 	s, _ := NewAlertServiceFrom(ctx, repo, true)
 	repo.setFail(true)
-	if err := s.ExecuteAction("alt-001", "ip_block", "", 0); err == nil {
+	if _, err := s.ExecuteAction("alt-001", "ip_block", "secadmin", ""); err == nil {
 		t.Fatal("action reported success although saving failed")
 	}
-	if a, _ := s.Get("alt-001"); a.Status != "open" || a.Disposal != nil {
+	if a, _ := s.Get("alt-001"); a.Status != "open" || a.Disposal != nil || len(a.History) != 0 {
 		t.Fatalf("unsaved disposal left in memory: %+v", a)
 	}
 	repo.setFail(false)
-	if err := s.ExecuteAction("alt-001", "ip_block", "", 0); err != nil {
+	if _, err := s.ExecuteAction("alt-001", "ip_block", "secadmin", ""); err != nil {
 		t.Fatal(err)
 	}
 	again, _ := NewAlertServiceFrom(ctx, repo, false)
-	if a, _ := again.Get("alt-001"); a.Status != "in_progress" || a.Disposal == nil || a.Disposal.Action != "ip_block" {
+	if a, _ := again.Get("alt-001"); a.Status != "in_progress" || a.Disposal == nil || a.Disposal.Action != "ip_block" || len(a.History) != 1 || a.History[0].Actor != "secadmin" {
 		t.Fatalf("disposal lost on reload: %+v", a)
 	}
 }

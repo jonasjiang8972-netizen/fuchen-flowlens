@@ -1066,3 +1066,32 @@ body {
 .flow-content {
   min-width: 0;
 }
+
+// Light theme for descriptions and modals: the dark-theme rules above
+// predate the light console and left light text on light panels.
+.ant-descriptions .ant-descriptions-item-label,
+.ant-descriptions .ant-descriptions-item-content {
+  color: var(--fl-text) !important;
+  background: var(--fl-surface) !important;
+  border-color: var(--fl-border-soft) !important;
+}
+
+.ant-descriptions .ant-descriptions-item-label {
+  color: var(--fl-text-muted) !important;
+  background: var(--fl-surface-muted) !important;
+}
+
+.ant-modal-content {
+  color: var(--fl-text);
+  background: var(--fl-surface) !important;
+  border: 1px solid var(--fl-border);
+}
+
+.ant-modal-header {
+  background: transparent !important;
+}
+
+.ant-modal-title,
+.ant-modal-close {
+  color: var(--fl-text) !important;
+}

@@ -44,6 +44,8 @@ type detection struct {
 	Subject   string
 	SubjectIP string
 	override  bool
+	// Endpoint is the API ("METHOD /path") the request went to.
+	Endpoint string
 }
 
 // detectInput is one request as seen by the engines.
@@ -52,8 +54,10 @@ type detectInput struct {
 	sensitive []string // sensitive field names the endpoint exposes
 	method    string
 	query     map[string]string
-	body      []byte    // request body
-	at        time.Time // when the request was made; zero means now
+	body      []byte // request body
+	// networkOnly marks a caller identified by source IP alone.
+	networkOnly bool
+	at          time.Time // when the request was made; zero means now
 }
 
 // evaluate runs every enabled rule's engine on one request and returns the
@@ -74,7 +78,11 @@ func (s *PlatformServer) evaluate(in detectInput) detection {
 		s.authEngine.RecordFailure(req.SourceIP, req.AccountID)
 	}
 
-	if s.ruleService.IsEnabled(ruleBFLA) {
+	// A caller known only by an internal source IP carries no role: its
+	// "internal" label says where it is, not what it may do, so BFLA would
+	// flag every internal client that reaches a management endpoint.
+	// External-only callers are still checked.
+	if s.ruleService.IsEnabled(ruleBFLA) && !(in.networkOnly && req.Role == "internal") {
 		score, reason := s.bflaEngine.Evaluate(req.AccountID, req.Role, req.Endpoint)
 		consider(ruleBFLA, score, reason)
 	}
@@ -105,6 +113,9 @@ func (s *PlatformServer) evaluate(in detectInput) detection {
 			best = detection{RuleID: ruleRate, Score: score, Reason: reason,
 				Subject: "endpoint:" + endpoint, SubjectIP: top, override: true}
 		}
+	}
+	if best.RuleID != "" && req.Endpoint != "" {
+		best.Endpoint = strings.TrimSpace(in.method + " " + req.Endpoint)
 	}
 	return best
 }
@@ -137,6 +148,9 @@ func (s *PlatformServer) raise(d detection, req accessDetectionRequest, confiden
 	}
 	alert := s.alertService.CreateDetectionAlert(rule.RequirementFR, severity, title, d.Reason,
 		ip, account, d.Score, confidence)
+	if d.Endpoint != "" {
+		s.alertService.AddEndpoint(alert.ID, d.Endpoint)
+	}
 	s.ruleService.IncrementHit(d.RuleID)
 	return &alert
 }

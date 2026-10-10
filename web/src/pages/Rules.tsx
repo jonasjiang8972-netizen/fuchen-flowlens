@@ -111,10 +111,10 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
       <Card className="panel-card" style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
-            <span style={{ color: '#EDEAE0', fontSize: 15, fontWeight: 600 }}>检测规则管理</span>
-            <span style={{ color: '#8A93A3', fontSize: 12, marginLeft: 8 }}>共 {rules.length} 条规则 · 可见 · 可知 · 可控 · 可优化</span>
+            <span style={{ color: 'var(--fl-text)', fontSize: 15, fontWeight: 600 }}>检测规则管理</span>
+            <span style={{ color: 'var(--fl-text-muted)', fontSize: 12, marginLeft: 8 }}>共 {rules.length} 条规则 · 可见 · 可知 · 可控 · 可优化</span>
           </div>
-          <div style={{ color: '#8A93A3', fontSize: 12 }}>已启用: {rules.filter(r => r.enabled).length} / {rules.length}</div>
+          <div style={{ color: 'var(--fl-text-muted)', fontSize: 12 }}>已启用: {rules.filter(r => r.enabled).length} / {rules.length}</div>
         </div>
       </Card>
 
@@ -129,15 +129,15 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
       </Card>
 
       <Modal
-        title={<span style={{ color: '#EDEAE0' }}>规则详情: {selectedRule?.rule_id}</span>}
+        title={<span style={{ color: 'var(--fl-text)' }}>规则详情: {selectedRule?.rule_id}</span>}
         open={detailVisible}
         onCancel={() => setDetailVisible(false)}
         footer={null}
         width={720}
       >
         {selectedRule && (
-          <div style={{ color: '#EDEAE0' }}>
-            <Descriptions bordered column={2} size="small" labelStyle={{ color: '#8A93A3' }}>
+          <div style={{ color: 'var(--fl-text)' }}>
+            <Descriptions bordered column={2} size="small" styles={{ label: { width: 96, whiteSpace: 'nowrap' } }}>
               <Descriptions.Item label="规则ID"><span className="mono">{selectedRule.rule_id}</span></Descriptions.Item>
               <Descriptions.Item label="所属需求">{selectedRule.source_requirement}</Descriptions.Item>
               <Descriptions.Item label="名称">{selectedRule.name}</Descriptions.Item>
@@ -174,12 +174,12 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
               {selectedRule.params?.map((param: any) => {
                 const changed = param.key in draft
                 return (
-                  <div key={param.key} style={{ marginBottom: 16, padding: 12, background: '#16233A', borderRadius: 4, border: changed ? '1px solid #D6A243' : '1px solid transparent' }}>
+                  <div key={param.key} style={{ marginBottom: 16, padding: 12, background: 'var(--fl-surface-muted)', borderRadius: 4, border: changed ? '1px solid #D6A243' : '1px solid transparent' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                       <span style={{ fontWeight: 500 }}>{param.label}{changed && <Tag color="gold" style={{ marginLeft: 8 }}>未保存</Tag>}</span>
-                      <span className="mono" style={{ color: '#8A93A3', fontSize: 12 }}>{param.key}</span>
+                      <span className="mono" style={{ color: 'var(--fl-text-muted)', fontSize: 12 }}>{param.key}</span>
                     </div>
-                    <div style={{ color: '#8A93A3', fontSize: 12, marginBottom: 8 }}>
+                    <div style={{ color: 'var(--fl-text-muted)', fontSize: 12, marginBottom: 8 }}>
                       {param.description}
                       <span style={{ marginLeft: 8 }}>默认值：{formatValue(param, param.default_value)}</span>
                       {(param.type === 'int' || param.type === 'float') && (param.min || param.max) ? <span style={{ marginLeft: 8 }}>范围：{param.min}～{param.max}</span> : null}
@@ -204,7 +204,7 @@ export default function Rules({ onNavigate }: { onNavigate: (page: string, id?: 
                           onChange={(e) => editParam(param, e.target.value)}
                         />
                       )}
-                      {param.unit && <span style={{ color: '#8A93A3', fontSize: 12, whiteSpace: 'nowrap' }}>{param.unit}</span>}
+                      {param.unit && <span style={{ color: 'var(--fl-text-muted)', fontSize: 12, whiteSpace: 'nowrap' }}>{param.unit}</span>}
                     </div>
                   </div>
                 )

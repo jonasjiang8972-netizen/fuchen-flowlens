@@ -34,6 +34,8 @@ type Asset struct {
 	SourceDistribution      map[string]string `json:"source_distribution"`
 	SensitiveFields         []string          `json:"sensitive_fields"`
 	RequestStats            *RequestStats     `json:"request_stats,omitempty"`
+	// Changes observed on the asset, oldest first.
+	Changes []ChangeRecord `json:"changes,omitempty"`
 }
 
 type RequestStats struct {
@@ -456,6 +458,7 @@ func (a *Asset) snapshot() Asset {
 	c := *a
 	c.PathRawSamples = append([]string(nil), a.PathRawSamples...)
 	c.SensitiveFields = append([]string(nil), a.SensitiveFields...)
+	c.Changes = append([]ChangeRecord(nil), a.Changes...)
 	if a.SourceDistribution != nil {
 		c.SourceDistribution = make(map[string]string, len(a.SourceDistribution))
 		for k, v := range a.SourceDistribution {
@@ -501,67 +504,59 @@ func (s *AssetService) GetDetail(id string) (*AssetDetail, error) {
 	if !ok {
 		return nil, fmt.Errorf("asset %s: %w", id, ErrNotFound)
 	}
+	changes := make([]ChangeRecord, len(a.Changes))
+	for i, c := range a.Changes { // newest first
+		changes[len(changes)-1-i] = c
+	}
 	return &AssetDetail{
 		Asset:         a.snapshot(),
-		Alerts:        s.getAssetAlerts(id),
-		ChangeHistory: s.getAssetChanges(id),
-		RelatedAssets: s.getRelatedAssets(id),
+		Alerts:        []AlertSummary{}, // filled in by the server from the alert service
+		ChangeHistory: changes,
+		RelatedAssets: s.relatedLocked(a),
 	}, nil
 }
 
-func (s *AssetService) getAssetAlerts(assetID string) []AlertSummary {
-	alerts := map[string][]AlertSummary{
-		"ast-001": {
-			{ID: "alt-001", Title: "疑似 BOLA 攻击：账号遍历订单对象", Severity: "high", Status: "open", Timestamp: time.Now().Add(-5 * time.Minute)},
-			{ID: "alt-005", Title: "数据泄露风险：响应体包含未脱敏身份证", Severity: "high", Status: "acknowledged", Timestamp: time.Now().Add(-2 * time.Hour)},
-		},
-		"ast-002": {
-			{ID: "alt-001", Title: "疑似 BOLA 攻击：账号遍历订单对象", Severity: "high", Status: "open", Timestamp: time.Now().Add(-5 * time.Minute)},
-			{ID: "alt-004", Title: "异常资源消耗：超高频访问", Severity: "medium", Status: "open", Timestamp: time.Now().Add(-30 * time.Minute)},
-		},
-		"ast-003": {
-			{ID: "alt-006", Title: "撞库攻击：支付接口高频失败", Severity: "critical", Status: "open", Timestamp: time.Now().Add(-20 * time.Minute)},
-		},
-		"ast-004": {
-			{ID: "alt-007", Title: "影子 API 告警：未在 CMDB 注册", Severity: "medium", Status: "open", Timestamp: time.Now().Add(-1 * time.Hour)},
-		},
-		"ast-008": {
-			{ID: "alt-008", Title: "数据泄露风险：明文传输敏感数据", Severity: "high", Status: "open", Timestamp: time.Now().Add(-45 * time.Minute)},
-		},
+// maxRelatedAssets bounds the related assets listed for one asset.
+const maxRelatedAssets = 10
+
+// relatedLocked lists assets on the same host whose path shares the first
+// two segments, busiest first.
+func (s *AssetService) relatedLocked(a *Asset) []string {
+	prefix := pathPrefix(a.PathNormalized, 2)
+	var rel []*Asset
+	for _, o := range s.assets {
+		if o.ID != a.ID && o.Host == a.Host && pathPrefix(o.PathNormalized, 2) == prefix {
+			rel = append(rel, o)
+		}
 	}
-	if a, ok := alerts[assetID]; ok {
-		return a
+	sort.Slice(rel, func(i, j int) bool { return rel[i].DailyAvgCalls > rel[j].DailyAvgCalls })
+	ids := []string{}
+	for i, o := range rel {
+		if i >= maxRelatedAssets {
+			break
+		}
+		ids = append(ids, o.ID)
 	}
-	return []AlertSummary{}
+	return ids
 }
 
-func (s *AssetService) getAssetChanges(assetID string) []ChangeRecord {
-	changes := map[string][]ChangeRecord{
-		"ast-001": {
-			{ChangeType: "field_added", Before: "不含id_card字段", After: "响应体新增id_card字段", Severity: "high", DetectedAt: time.Now().Add(-2 * time.Hour)},
-			{ChangeType: "auth_method", Before: "Bearer Token 必填", After: "无需认证（疑似误配置）", Severity: "high", DetectedAt: time.Now().Add(-12 * time.Hour)},
-		},
-		"ast-002": {
-			{ChangeType: "field_added", Before: "不含recipient_phone字段", After: "响应体新增recipient_phone字段", Severity: "medium", DetectedAt: time.Now().Add(-1 * time.Hour)},
-		},
+func pathPrefix(path string, segments int) string {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) > segments {
+		parts = parts[:segments]
 	}
-	if c, ok := changes[assetID]; ok {
-		return c
-	}
-	return []ChangeRecord{}
+	return strings.Join(parts, "/")
 }
 
-func (s *AssetService) getRelatedAssets(assetID string) []string {
-	related := map[string][]string{
-		"ast-001": {"ast-004", "ast-005"},
-		"ast-002": {"ast-001", "ast-004"},
-		"ast-003": {"ast-001", "ast-002"},
-		"ast-004": {"ast-001"},
+// maxAssetChanges bounds the change records kept per asset.
+const maxAssetChanges = 50
+
+// recordChangeLocked appends a change observed on a.
+func (a *Asset) recordChangeLocked(changeType, before, after, severity string, at time.Time) {
+	a.Changes = append(a.Changes, ChangeRecord{ChangeType: changeType, Before: before, After: after, Severity: severity, DetectedAt: at})
+	if len(a.Changes) > maxAssetChanges {
+		a.Changes = append([]ChangeRecord(nil), a.Changes[len(a.Changes)-maxAssetChanges:]...)
 	}
-	if r, ok := related[assetID]; ok {
-		return r
-	}
-	return []string{}
 }
 
 // Claim sets the asset owner and saves it; if saving fails the previous
@@ -573,14 +568,18 @@ func (s *AssetService) Claim(id, owner string) error {
 		s.mu.Unlock()
 		return fmt.Errorf("asset %s: %w", id, ErrNotFound)
 	}
-	prevStatus, prevOwner := a.ClaimStatus, a.Owner
+	prevClaim, prevOwner, prevStatus, prevChanges := a.ClaimStatus, a.Owner, a.Status, a.Changes
+	a.recordChangeLocked("owner_changed", prevOwner, "责任人 "+owner, "info", time.Now())
 	a.ClaimStatus = "claimed"
 	a.Owner = owner
+	if a.Status == "shadow" {
+		a.Status = "active" // an owner registered it
+	}
 	s.mu.Unlock()
 
 	if err := s.p.writeThrough(context.Background(), []string{id}, s.snapshotDocs); err != nil {
 		s.mu.Lock()
-		a.ClaimStatus, a.Owner = prevStatus, prevOwner
+		a.ClaimStatus, a.Owner, a.Status, a.Changes = prevClaim, prevOwner, prevStatus, prevChanges
 		s.mu.Unlock()
 		return fmt.Errorf("save asset %s: %w", id, err)
 	}
@@ -629,16 +628,22 @@ func (s *AssetService) ObserveEvent(evt shared.APIEvent, sensitiveFields []strin
 			ClaimStatus:             "unclaimed",
 			GroupPath:               inferGroupPath(path, evt.Metadata.ServiceName),
 			NormalizationConfidence: 0.8,
-			Status:                  "active",
-			SourceDistribution:      map[string]string{"internal": "0%", "external": "0%"},
-			SensitiveFields:         []string{},
+			// Discovered from traffic and not yet registered by an owner:
+			// a shadow API until it is claimed.
+			Status:             "shadow",
+			SourceDistribution: map[string]string{"internal": "0%", "external": "0%"},
+			SensitiveFields:    []string{},
 			RequestStats: &RequestStats{
 				StatusCodeDist: make(map[string]int),
 				HourlyCalls:    make([]int, 24),
 				TopCallers:     []CallerInfo{},
 			},
 		}
+		a.recordChangeLocked("discovered", "", fmt.Sprintf("首次在流量中发现（%s %s）", method, host), "info", now)
 		s.assets[id] = a
+		for _, field := range sensitiveFields {
+			a.SensitiveFields = append(a.SensitiveFields, field)
+		}
 	}
 
 	a.LastSeen = now
@@ -647,6 +652,8 @@ func (s *AssetService) ObserveEvent(evt shared.APIEvent, sensitiveFields []strin
 	}
 	for _, field := range sensitiveFields {
 		if !contains(a.SensitiveFields, field) {
+			// A sensitive field the endpoint did not carry before.
+			a.recordChangeLocked("sensitive_field_added", "", "新出现敏感字段 "+field, "high", now)
 			a.SensitiveFields = append(a.SensitiveFields, field)
 		}
 	}

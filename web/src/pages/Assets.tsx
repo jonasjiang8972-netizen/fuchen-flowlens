@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Card, Input, Select, Space, Table, Tag, message } from 'antd'
 import { ApiOutlined, DatabaseOutlined, ExportOutlined, SearchOutlined, UserAddOutlined } from '@ant-design/icons'
+import { downloadCSV } from '../utils/csv'
 import { assetService, claimAsset } from '../services/api'
 import { errorMessage } from '../services/http'
 import { useSession } from '../context/session'
@@ -66,6 +67,14 @@ export default function Assets({ onNavigate }: Props) {
       return matchKeyword && matchStatus && matchSensitivity && matchClaim
     })
   }, [assets, keyword, status, sensitivity, claimStatus])
+
+  const exportAssets = () => {
+    downloadCSV(`API资产-${new Date().toISOString().slice(0, 10)}.csv`,
+      ['方法', '路径', '主机', '状态', '敏感度', '敏感字段', '责任人', '日均调用', '首次发现', '最近访问'],
+      filteredAssets.map((a: any) => [a.method, a.path_normalized, a.host, a.status === 'shadow' ? '影子 API' : a.status,
+        a.sensitivity_hint, (a.sensitive_fields || []).join(' '), a.claim_status === 'claimed' ? a.owner : '',
+        a.daily_avg_calls, a.first_seen ? new Date(a.first_seen).toLocaleString('zh-CN') : '', a.last_seen ? new Date(a.last_seen).toLocaleString('zh-CN') : '']))
+  }
 
   const highAssets = assets.filter(a => a.sensitivity_hint === 'high')
   const shadowAssets = assets.filter(a => a.status === 'shadow')
@@ -148,8 +157,7 @@ export default function Assets({ onNavigate }: Props) {
           <div className="page-heading__desc">统一管理自动发现的 API、影子接口、高敏数据暴露面和责任归属。</div>
         </div>
         <Space>
-          <Button icon={<ExportOutlined />}>导出</Button>
-          <Button type="primary" icon={<DatabaseOutlined />}>导入 OpenAPI</Button>
+          <Button icon={<ExportOutlined />} onClick={exportAssets}>导出 CSV</Button>
         </Space>
       </div>
 

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, Card, Input, Select, Space, Table, Tag, message } from 'antd'
+import { Button, Card, Dropdown, Input, Select, Space, Table, Tag, message } from 'antd'
 import { AlertOutlined, CheckCircleOutlined, ExportOutlined, SearchOutlined, ThunderboltOutlined } from '@ant-design/icons'
-import { alertService, executeAlertAction } from '../services/api'
+import { alertActionLabel, alertActionStatus, alertService, executeAlertAction } from '../services/api'
 import { errorMessage } from '../services/http'
 import { useSession } from '../context/session'
+import { downloadCSV } from '../utils/csv'
 
 interface Props {
   onNavigate: (page: string, id?: string) => void
@@ -53,17 +54,53 @@ export default function Alerts({ onNavigate }: Props) {
   const { can } = useSession()
   const canHandle = can('alert.handle')
 
+  const [selected, setSelected] = useState<string[]>([])
+  const [batchBusy, setBatchBusy] = useState(false)
+
+  // Applies one handling action to every selected alert, one at a time.
+  const batchAction = async (action: string) => {
+    setBatchBusy(true)
+    let done = 0
+    const failed: string[] = []
+    for (const id of selected) {
+      try {
+        const updated = await executeAlertAction(id, action)
+        setAlerts(prev => prev.map(a => (a.alert_id === id ? (updated?.alert_id ? updated : { ...a, status: alertActionStatus[action] }) : a)))
+        done++
+      } catch (err) {
+        failed.push(`${id}: ${errorMessage(err)}`)
+      }
+    }
+    setBatchBusy(false)
+    setSelected([])
+    if (failed.length) message.error(`${done} 条成功，${failed.length} 条失败：${failed[0]}`)
+    else message.success(`已对 ${done} 条告警${alertActionLabel[action]}`)
+  }
+
+  const exportAlerts = () => {
+    downloadCSV(`告警-${new Date().toISOString().slice(0, 10)}.csv`,
+      ['告警ID', '产生时间', '等级', '状态', '标题', '原因', '规则', '风险评分', '命中次数', '来源IP', '账号/调用方', '涉及接口'],
+      filteredAlerts.map(a => [a.alert_id, new Date(a.timestamp).toLocaleString('zh-CN'), severityLabel[a.severity] || a.severity,
+        statusLabel[a.status] || a.status, a.title, a.description, a.source_requirement, a.risk_score, a.occurrence_count || 1,
+        a.source_ip, a.account_id, (a.endpoints || []).join(' ')]))
+  }
+
   const handleAction = async (alertId: string, action: string) => {
+    let updated: any
     try {
-      await executeAlertAction(alertId, action)
+      updated = await executeAlertAction(alertId, action)
     } catch (err) {
       message.error(errorMessage(err))
       return
     }
     setAlerts(prev => prev.map(a =>
-      a.alert_id === alertId ? { ...a, status: 'in_progress', disposal: { action, status: 'success' } } : a
+      a.alert_id === alertId ? (updated?.alert_id ? updated : { ...a, status: alertActionStatus[action] }) : a
     ))
-    message.success(action === 'ip_block' ? '已下发封禁' : '已下发限流')
+    // The platform records disposals; enforcing them is up to the gateway,
+    // WAF or SOAR that receives the forwarded event.
+    message.success(alertActionStatus[action] === 'in_progress'
+      ? `已记录处置：${alertActionLabel[action]}。请在网关或 WAF 执行`
+      : `已${alertActionLabel[action]}`)
   }
 
   const sources = useMemo(() => {
@@ -163,10 +200,10 @@ export default function Alerts({ onNavigate }: Props) {
         <Space>
           <Button size="small" onClick={(e) => { e.stopPropagation(); onNavigate('alert-detail', record.alert_id) }}>详情</Button>
           {record.status === 'open' && canHandle && (
-            <Button size="small" type="primary" danger onClick={(e) => { e.stopPropagation(); handleAction(record.alert_id, 'ip_block') }}>封禁</Button>
+            <Button size="small" onClick={(e) => { e.stopPropagation(); handleAction(record.alert_id, 'acknowledge') }}>确认</Button>
           )}
-          {record.status === 'open' && canHandle && (
-            <Button size="small" onClick={(e) => { e.stopPropagation(); handleAction(record.alert_id, 'rate_limit') }}>限流</Button>
+          {(record.status === 'open' || record.status === 'acknowledged') && canHandle && (
+            <Button size="small" type="primary" danger onClick={(e) => { e.stopPropagation(); handleAction(record.alert_id, 'ip_block') }}>封禁</Button>
           )}
         </Space>
       ),
@@ -181,8 +218,15 @@ export default function Alerts({ onNavigate }: Props) {
           <div className="page-heading__desc">按风险优先级组织告警研判、证据核查和处置动作，形成可审计的运营闭环。</div>
         </div>
         <Space>
-          <Button icon={<ExportOutlined />}>导出报表</Button>
-          {canHandle && <Button type="primary" icon={<ThunderboltOutlined />}>批量处置</Button>}
+          <Button icon={<ExportOutlined />} onClick={exportAlerts} disabled={!filteredAlerts.length}>导出 CSV</Button>
+          {canHandle && (
+            <Dropdown
+              disabled={!selected.length}
+              menu={{ items: ['acknowledge', 'resolve', 'false_positive'].map(k => ({ key: k, label: alertActionLabel[k] })), onClick: ({ key }) => batchAction(key) }}
+            >
+              <Button type="primary" icon={<ThunderboltOutlined />} loading={batchBusy}>批量处置{selected.length ? `（${selected.length}）` : ''}</Button>
+            </Dropdown>
+          )}
         </Space>
       </div>
 
@@ -242,6 +286,7 @@ export default function Alerts({ onNavigate }: Props) {
           columns={columns}
           dataSource={filteredAlerts}
           rowKey="alert_id"
+          rowSelection={canHandle ? { selectedRowKeys: selected, onChange: keys => setSelected(keys as string[]) } : undefined}
           pagination={{ pageSize: 10, showSizeChanger: true }}
           size="middle"
           onRow={(record) => ({ onClick: () => onNavigate('alert-detail', record.alert_id), style: { cursor: 'pointer' } })}

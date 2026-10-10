@@ -184,7 +184,11 @@ func TestSeparationOfDuties(t *testing.T) {
 		{"GET", "/api/v1/assets", "", []string{"sec_admin", "analyst", "viewer"}},
 		{"GET", "/api/v1/alerts", "", []string{"sec_admin", "analyst", "viewer"}},
 		{"PUT", "/api/v1/rules/R-BOLA-001", `{"enabled":false}`, []string{"sec_admin"}},
-		{"POST", "/api/v1/alerts/alt-001/block_ip", `{}`, []string{"sec_admin", "analyst"}},
+		{"POST", "/api/v1/alerts/alt-001/ip_block", `{}`, []string{"sec_admin", "analyst"}},
+		{"GET", "/api/v1/alerts/trend", "", []string{"sec_admin", "analyst", "viewer"}},
+		{"GET", "/api/v1/callers", "", []string{"sec_admin", "analyst", "viewer"}},
+		{"GET", "/api/v1/topology", "", []string{"sec_admin", "analyst", "viewer"}},
+		{"GET", "/api/v1/coverage/summary", "", []string{"sec_admin", "analyst", "viewer"}},
 		{"POST", "/api/v1/assets/ast-001/claim", `{"owner":"team"}`, []string{"sec_admin", "analyst"}},
 		{"GET", "/api/v1/coverage/agents", "", []string{"sec_admin", "analyst", "viewer"}},
 		// Management console

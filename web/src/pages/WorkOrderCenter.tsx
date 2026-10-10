@@ -1,71 +1,115 @@
-import { Card, Progress, Space, Table, Tag, Timeline } from 'antd'
+import { useEffect, useMemo, useState } from 'react'
+import { Card, Progress, Select, Table, Tag, Timeline } from 'antd'
 import { AuditOutlined, CheckCircleOutlined, ClockCircleOutlined, UserSwitchOutlined } from '@ant-design/icons'
+import { alertActionLabel, alertService } from '../services/api'
+import { closedStatuses, formatDuration, slaHours, slaState } from '../utils/sla'
 
 interface Props { onNavigate: (page: string, id?: string) => void }
 
-const ticketRows = [
-  { id: 'TKT-001', title: 'BOLA 攻击调查：订单对象遍历', source: 'alt-001', owner: '订单安全接口人', severity: 'high', status: 'processing', sla: 68, due: '4小时内', action: '限流账号 + 修复对象级鉴权' },
-  { id: 'TKT-002', title: '撞库攻击 IP 封禁确认', source: 'alt-002', owner: '安全运营', severity: 'critical', status: 'pending', sla: 42, due: '1小时内', action: '封禁 IP + 通知 IAM' },
-  { id: 'TKT-003', title: 'legacy/export 影子 API 纳管', source: 'alt-003', owner: '平台工程', severity: 'medium', status: 'processing', sla: 75, due: '2天内', action: '补 CMDB + Owner + 网关策略' },
-  { id: 'TKT-004', title: '身份证号未脱敏修复', source: 'alt-005', owner: '用户服务 Owner', severity: 'high', status: 'review', sla: 88, due: '今天', action: '响应字段脱敏 + 回归验证' },
-  { id: 'TKT-005', title: 'Partner API Key 注册表补齐', source: 'BLD-004', owner: '开放平台', severity: 'medium', status: 'done', sla: 100, due: '已完成', action: '同步 partner_registry' },
-]
-
 const statusMap: Record<string, { label: string; color: string }> = {
-  pending: { label: '待分派', color: 'error' },
-  processing: { label: '处理中', color: 'processing' },
-  review: { label: '待复核', color: 'warning' },
-  done: { label: '已闭环', color: 'success' },
+  open: { label: '待处理', color: 'error' },
+  acknowledged: { label: '已确认', color: 'processing' },
+  in_progress: { label: '处置中', color: 'warning' },
+  resolved: { label: '已解决', color: 'success' },
+  false_positive: { label: '误报', color: 'default' },
 }
 
+const severityColor: Record<string, string> = { critical: 'red', high: 'orange', medium: 'gold', low: 'blue' }
+const severityLabel: Record<string, string> = { critical: '严重', high: '高危', medium: '中危', low: '低危' }
+
+// Each alert is a work item; its time limit depends on severity (see
+// utils/sla) and its handling steps come from the alert history.
 export default function WorkOrderCenter({ onNavigate }: Props) {
-  const openTickets = ticketRows.filter(t => t.status !== 'done')
-  const overdue = ticketRows.filter(t => t.sla < 60 && t.status !== 'done')
+  const [alerts, setAlerts] = useState<any[]>([])
+  const [filter, setFilter] = useState('open')
+
+  useEffect(() => {
+    alertService.list().then(setAlerts)
+  }, [])
+
+  const now = Date.now()
+  const rows = useMemo(() => alerts.map(a => {
+    const sla = slaState(a, now)
+    const history: any[] = a.history || []
+    const last = history[history.length - 1]
+    return { ...a, sla, handler: last?.actor || '-', lastAction: last ? alertActionLabel[last.action] || last.action : '-' }
+  }).sort((x, y) => {
+    // Open items first, nearest deadline first; closed ones newest first.
+    if (x.sla.closed !== y.sla.closed) return x.sla.closed ? 1 : -1
+    if (!x.sla.closed) return x.sla.deadline - y.sla.deadline
+    return (y.sla.closedAt || 0) - (x.sla.closedAt || 0)
+  }), [alerts, now])
+
+  const open = rows.filter(r => !r.sla.closed)
+  const overdue = open.filter(r => r.sla.breached)
+  const closed = rows.filter(r => r.sla.closed)
+  const closedInTime = closed.filter(r => !r.sla.breached)
+  const handled = open.filter(r => (r.history || []).length > 0)
+  const visible = filter === 'open' ? open : filter === 'overdue' ? overdue : filter === 'closed' ? closed : rows
+
+  // Most recent handling steps across all alerts.
+  const recentSteps = useMemo(() => alerts.flatMap(a => (a.history || []).map((h: any) => ({ ...h, alert: a })))
+    .sort((x, y) => new Date(y.time).getTime() - new Date(x.time).getTime()).slice(0, 8), [alerts])
 
   return (
     <div className="commercial-page">
       <div className="page-heading">
         <div>
           <div className="page-heading__title">处置闭环</div>
-          <div className="page-heading__desc">把告警、盲区和契约差异转成可分派、可复核、可审计的治理工单。</div>
+          <div className="page-heading__desc">每条告警即一个处置项，按严重程度设定处置时限：严重 {slaHours.critical} 小时、高危 {slaHours.high} 小时、中危 {slaHours.medium} 小时、低危 {slaHours.low} 小时。</div>
         </div>
       </div>
 
       <div className="metric-grid">
-        <Card className="metric-card"><div className="metric-card__label"><AuditOutlined /> 开放工单</div><div className="metric-card__value">{openTickets.length}</div><div className="metric-card__meta">待分派、处理中、待复核</div></Card>
-        <Card className="metric-card"><div className="metric-card__label"><ClockCircleOutlined /> SLA 风险</div><div className="metric-card__value" style={{ color: 'var(--fl-critical)' }}>{overdue.length}</div><div className="metric-card__meta">剩余处理时间不足或已临近超时</div></Card>
-        <Card className="metric-card"><div className="metric-card__label"><UserSwitchOutlined /> Owner 覆盖</div><div className="metric-card__value">92%</div><div className="metric-card__meta">风险已绑定责任团队</div></Card>
-        <Card className="metric-card"><div className="metric-card__label"><CheckCircleOutlined /> 复发检测</div><div className="metric-card__value">3</div><div className="metric-card__meta">已闭环风险仍在观察窗口</div></Card>
+        <Card className="metric-card"><div className="metric-card__label"><AuditOutlined /> 未关闭</div><div className="metric-card__value">{open.length}</div><div className="metric-card__meta">待处理、已确认、处置中</div></Card>
+        <Card className="metric-card"><div className="metric-card__label"><ClockCircleOutlined /> 已超时</div><div className="metric-card__value" style={{ color: overdue.length ? 'var(--fl-critical)' : undefined }}>{overdue.length}</div><div className="metric-card__meta">未关闭且超过处置时限</div></Card>
+        <Card className="metric-card"><div className="metric-card__label"><UserSwitchOutlined /> 已有人处理</div><div className="metric-card__value">{handled.length}</div><div className="metric-card__meta">未关闭告警中已确认或已处置的</div></Card>
+        <Card className="metric-card"><div className="metric-card__label"><CheckCircleOutlined /> 按时关闭率</div><div className="metric-card__value">{closed.length ? `${Math.round((closedInTime.length / closed.length) * 100)}%` : '-'}</div><div className="metric-card__meta">{closedInTime.length}/{closed.length} 个已关闭告警在时限内关闭</div></Card>
       </div>
 
-      <Card title="治理工单">
+      <Card title="处置项" extra={
+        <Select value={filter} onChange={setFilter} style={{ width: 130 }} options={[
+          { value: 'open', label: `未关闭（${open.length}）` },
+          { value: 'overdue', label: `已超时（${overdue.length}）` },
+          { value: 'closed', label: `已关闭（${closed.length}）` },
+          { value: 'all', label: `全部（${rows.length}）` },
+        ]} />
+      }>
         <Table
           columns={[
-            { title: '工单ID', dataIndex: 'id', key: 'id', width: 100 },
-            { title: '标题', dataIndex: 'title', key: 'title' },
-            { title: '来源', dataIndex: 'source', key: 'source', width: 110, render: (v: string) => <Tag onClick={() => v.startsWith('alt') && onNavigate('alert-detail', v)} style={{ cursor: v.startsWith('alt') ? 'pointer' : 'default' }}>{v}</Tag> },
-            { title: 'Owner', dataIndex: 'owner', key: 'owner', width: 140 },
-            { title: '等级', dataIndex: 'severity', key: 'severity', width: 90, render: (v: string) => <Tag color={v === 'critical' ? 'red' : v === 'high' ? 'orange' : 'gold'}>{v}</Tag> },
-            { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (v: string) => <Tag color={statusMap[v]?.color}>{statusMap[v]?.label || v}</Tag> },
-            { title: 'SLA', dataIndex: 'sla', key: 'sla', width: 150, render: (v: number) => <Progress percent={v} size="small" strokeColor={v < 60 ? 'var(--fl-critical)' : 'var(--fl-success)'} /> },
-            { title: '期限', dataIndex: 'due', key: 'due', width: 100 },
-            { title: '治理动作', dataIndex: 'action', key: 'action' },
+            { title: '告警', dataIndex: 'title', key: 'title', render: (v: string, r: any) => <a onClick={() => onNavigate('alert-detail', r.alert_id)}>{v}</a> },
+            { title: '等级', dataIndex: 'severity', key: 'severity', width: 80, render: (v: string) => <Tag color={severityColor[v]}>{severityLabel[v] || v}</Tag> },
+            { title: '状态', dataIndex: 'status', key: 'status', width: 90, render: (v: string) => <Tag color={statusMap[v]?.color}>{statusMap[v]?.label || v}</Tag> },
+            { title: '处置时限', key: 'sla', width: 200, render: (_: any, r: any) => {
+              const s = r.sla
+              const label = s.closed
+                ? (s.breached ? '超时关闭' : '按时关闭')
+                : (s.breached ? `已超时 ${formatDuration(-s.remainingMs)}` : `剩余 ${formatDuration(s.remainingMs)}`)
+              return <div><Progress percent={Math.min(100, Math.round(s.elapsedShare * 100))} size="small" showInfo={false} strokeColor={s.breached ? 'var(--fl-critical)' : s.elapsedShare > 0.7 ? 'var(--fl-medium)' : 'var(--fl-success)'} /><span className="muted" style={{ fontSize: 12 }}>{label}</span></div>
+            } },
+            { title: '最近处置', dataIndex: 'lastAction', key: 'lastAction', width: 120 },
+            { title: '处理人', dataIndex: 'handler', key: 'handler', width: 110 },
+            { title: '产生时间', dataIndex: 'timestamp', key: 'timestamp', width: 160, render: (v: string) => new Date(v).toLocaleString('zh-CN') },
           ]}
-          dataSource={ticketRows}
-          rowKey="id"
-          pagination={false}
+          dataSource={visible}
+          rowKey="alert_id"
+          pagination={visible.length > 15 ? { pageSize: 15 } : false}
+          locale={{ emptyText: filter === 'open' ? '没有未关闭的告警' : '暂无数据' }}
         />
       </Card>
 
-      <Card title="闭环审计链">
-        <Timeline
-          items={[
-            { color: '#117865', children: <div><div className="section-title">告警触发</div><div className="muted">alt-001 BOLA 对象遍历，风险评分 91。</div></div> },
-            { color: '#117865', children: <div><div className="section-title">自动创建工单</div><div className="muted">绑定订单安全接口人，SLA 4 小时。</div></div> },
-            { color: '#d96b20', children: <div><div className="section-title">临时处置</div><div className="muted">对账号限流并失效异常会话。</div></div> },
-            { color: '#117865', children: <div><div className="section-title">修复验证</div><div className="muted">补充对象级鉴权测试，并进入复发观察窗口。</div></div> },
-          ]}
-        />
+      <Card title="最近处置记录">
+        {recentSteps.length ? (
+          <Timeline items={recentSteps.map((h: any) => ({
+            color: closedStatuses.has(h.status) ? '#117865' : '#d96b20',
+            children: (
+              <div>
+                <div className="section-title">{h.actor}：{alertActionLabel[h.action] || h.action}{h.note ? `（${h.note}）` : ''}</div>
+                <div className="muted"><a onClick={() => onNavigate('alert-detail', h.alert.alert_id)}>{h.alert.title}</a> · {new Date(h.time).toLocaleString('zh-CN')}</div>
+              </div>
+            ),
+          }))} />
+        ) : <div className="muted">暂无处置记录。在告警中心确认、处置或关闭告警后，这里会记录操作人和时间。</div>}
       </Card>
     </div>
   )

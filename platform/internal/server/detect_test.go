@@ -172,3 +172,20 @@ func TestRateAlertIsFiledPerEndpoint(t *testing.T) {
 		t.Fatalf("alerts: %+v", alerts)
 	}
 }
+
+func TestBFLASkipsInternalNetworkOnlyCallers(t *testing.T) {
+	srv := NewPlatformServer(storage.NewMemStore())
+	internal := accessDetectionRequest{AccountID: "ip:10.20.0.5", Role: "internal", Endpoint: "/api/v1/admin/export", SourceIP: "10.20.0.5", Status: 200}
+	if d := srv.evaluate(detectInput{req: internal, networkOnly: true}); d.RuleID == ruleBFLA {
+		t.Fatalf("internal IP-only caller flagged: %+v", d)
+	}
+	external := accessDetectionRequest{AccountID: "ip:198.51.100.7", Role: "external", Endpoint: "/api/v1/admin/export", SourceIP: "198.51.100.7", Status: 200}
+	if d := srv.evaluate(detectInput{req: external, networkOnly: true}); d.RuleID != ruleBFLA {
+		t.Fatalf("external caller on admin endpoint not flagged: %+v", d)
+	}
+	// An identified user with an ordinary role is still checked.
+	user := accessDetectionRequest{AccountID: "u-1", Role: "user", Endpoint: "/api/v1/admin/export", SourceIP: "10.20.0.6", Status: 200}
+	if d := srv.evaluate(detectInput{req: user}); d.RuleID != ruleBFLA {
+		t.Fatalf("identified user not flagged: %+v", d)
+	}
+}

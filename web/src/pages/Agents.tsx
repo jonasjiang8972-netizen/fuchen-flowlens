@@ -26,12 +26,11 @@ export default function Agents({ onNavigate }: Props) {
   const queueUsage = queueSize ? queueDepth / queueSize : 0
   const ingestDropRate = ingest?.accepted ? (ingest.dropped || 0) / ingest.accepted : avgDropRate
 
+  const lastEvent = ingest?.last_event_at ? new Date(ingest.last_event_at) : null
   const pipelineRows = [
-    { stage: 'Agent 采集', status: degradedCount || offlineCount ? 'degraded' : 'online', latency: '18ms', throughput: `${totalQps.toLocaleString()} QPS`, detail: `${onlineCount}/${agents.length} 在线，平均丢弃率 ${(avgDropRate * 100).toFixed(2)}%` },
-    { stage: 'Gateway Log / eBPF Normalizer', status: 'online', latency: '64ms', throughput: '156k events/min', detail: '路径归一化、账号/对象上下文补全' },
-    { stage: 'Ingest Queue', status: queueUsage > 0.7 ? 'degraded' : 'online', latency: 'sub-second', throughput: `${queueDepth.toLocaleString()}/${queueSize.toLocaleString()}`, detail: `已接收 ${(ingest?.accepted || 0).toLocaleString()}，已处理 ${(ingest?.processed || 0).toLocaleString()}，重复 ${(ingest?.duplicates || 0).toLocaleString()}` },
-    { stage: 'Detection Engine', status: 'online', latency: 'P95 182ms', throughput: 'BOLA / Auth / BFLA / DLP', detail: '高风险事件自动进入告警中心并回写策略命中' },
-    { stage: 'Alert Store / Web Console', status: 'online', latency: '240ms', throughput: '实时刷新', detail: '告警、资产、链路视图可查询' },
+    { stage: 'Agent 采集', status: degradedCount || offlineCount ? 'degraded' : 'online', throughput: `${totalQps.toLocaleString(undefined, { maximumFractionDigits: 1 })} QPS`, detail: `${onlineCount}/${agents.length} 在线，平均丢弃率 ${(avgDropRate * 100).toFixed(2)}%` },
+    { stage: '接收队列', status: queueUsage > 0.7 ? 'degraded' : 'online', throughput: `${queueDepth.toLocaleString()}/${queueSize.toLocaleString()}`, detail: `已接收 ${(ingest?.accepted || 0).toLocaleString()}，重复 ${(ingest?.duplicates || 0).toLocaleString()}，丢弃 ${(ingest?.dropped || 0).toLocaleString()}` },
+    { stage: '归一化、脱敏与检测', status: lastEvent && Date.now() - lastEvent.getTime() < 300000 ? 'online' : 'degraded', throughput: `已处理 ${(ingest?.processed || 0).toLocaleString()}`, detail: lastEvent ? `最近一条事件 ${lastEvent.toLocaleString('zh-CN')}` : '尚未收到事件' },
   ]
 
   const columns = [
@@ -123,7 +122,6 @@ export default function Agents({ onNavigate }: Props) {
           columns={[
             { title: '阶段', dataIndex: 'stage', key: 'stage' },
             { title: '状态', dataIndex: 'status', key: 'status', width: 100, render: (value: string) => <Tag color={value === 'online' ? 'success' : 'warning'}>{value === 'online' ? '正常' : '需关注'}</Tag> },
-            { title: '延迟', dataIndex: 'latency', key: 'latency', width: 130 },
             { title: '吞吐 / Topic', dataIndex: 'throughput', key: 'throughput', width: 170 },
             { title: '说明', dataIndex: 'detail', key: 'detail' },
           ]}

@@ -15,6 +15,7 @@ import (
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/redact"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/pkg/version"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/audit"
+	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/auth"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/engine"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/iam"
 	"github.com/jonasjiang8972-netizen/fuchen-flowlens/platform/internal/ingest"
@@ -31,6 +32,9 @@ type PlatformServer struct {
 	assetService   *service.AssetService
 	alertService   *service.AlertService
 	ruleService    *service.RuleService
+	callerService  *service.CallerService
+	topology       *service.TopologyService
+	traffic        trafficCounters
 	bolaEngine     *engine.BOLAEngine
 	authEngine     *engine.AuthFailureEngine
 	bflaEngine     *engine.BFLAEngine
@@ -91,21 +95,23 @@ func newServer(store storage.Store, agents *service.AgentService, assets *servic
 	auditSvc := audit.New(store)
 	auditSvc.SetSettings(store)
 	srv := &PlatformServer{
-		store:        store,
-		audit:        auditSvc,
-		iam:          iam.NewService(store, auditSvc),
-		agentService: agents,
-		assetService: assets,
-		alertService: alerts,
-		ruleService:  rules,
-		bolaEngine:   engine.NewBOLAEngine(store),
-		authEngine:   engine.NewAuthFailureEngine(store),
-		bflaEngine:   engine.NewBFLAEngine(store),
-		dlpEngine:    engine.NewDLPEngine(store),
-		botEngine:    engine.NewBotEngine(store),
-		rateEngine:   engine.NewRateEngine(store),
-		ssrfEngine:   engine.NewSSRFEngine(store),
-		redactor:     redact.New(""),
+		store:         store,
+		audit:         auditSvc,
+		iam:           iam.NewService(store, auditSvc),
+		agentService:  agents,
+		assetService:  assets,
+		alertService:  alerts,
+		ruleService:   rules,
+		callerService: service.NewCallerService(),
+		topology:      service.NewTopologyService(),
+		bolaEngine:    engine.NewBOLAEngine(store),
+		authEngine:    engine.NewAuthFailureEngine(store),
+		bflaEngine:    engine.NewBFLAEngine(store),
+		dlpEngine:     engine.NewDLPEngine(store),
+		botEngine:     engine.NewBotEngine(store),
+		rateEngine:    engine.NewRateEngine(store),
+		ssrfEngine:    engine.NewSSRFEngine(store),
+		redactor:      redact.New(""),
 	}
 	srv.applyAllRuleConfigs()
 	srv.ingestPipeline = ingest.NewPipeline(20000, srv.processIngestEvent)
@@ -260,6 +266,7 @@ func (s *PlatformServer) GetAssetHandler(c *gin.Context) {
 		serviceErr(c, err)
 		return
 	}
+	detail.Alerts = s.alertService.ForEndpoint(detail.Method + " " + detail.PathNormalized)
 	c.JSON(200, detail)
 }
 
@@ -305,18 +312,20 @@ func (s *PlatformServer) GetAlertHandler(c *gin.Context) {
 }
 
 func (s *PlatformServer) AlertActionHandler(c *gin.Context) {
-	id := c.Param("id")
-	action := c.Param("action")
 	var req struct {
-		Target          string `json:"target"`
-		DurationMinutes int    `json:"duration_minutes"`
+		Note string `json:"note"`
 	}
-	c.ShouldBindJSON(&req)
-	if err := s.alertService.ExecuteAction(id, action, req.Target, req.DurationMinutes); err != nil {
+	_ = c.ShouldBindJSON(&req)
+	actor := "system"
+	if p := auth.Principal(c); p != nil {
+		actor = p.Username
+	}
+	alert, err := s.alertService.ExecuteAction(c.Param("id"), c.Param("action"), actor, strings.TrimSpace(req.Note))
+	if err != nil {
 		serviceErr(c, err)
 		return
 	}
-	c.JSON(200, gin.H{"status": "ok", "action": action})
+	c.JSON(200, alert)
 }
 
 // ─── Ingest Pipeline ───────────────────────────────────────────
@@ -377,6 +386,25 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 	principal := resolvePrincipal(evt)
 	sensitiveFields := classifySensitiveFields(evt)
 	s.assetService.ObserveEvent(evt, sensitiveFields)
+	s.callerService.Observe(principal.ID, principal.Type, principal.Role, strings.Join(principal.Evidence, ","),
+		principal.Confidence, evt.Application.Method+" "+evt.Application.PathNormalized, evt.Network.SrcIP,
+		int(evt.Application.StatusCode))
+	backend := evt.Metadata.ServiceName
+	if backend == "" {
+		backend = evt.Network.DstIP
+	}
+	host := evt.Application.Host
+	if host == "" {
+		host = evt.Network.DstIP
+	}
+	s.topology.Observe(principal.Type, host, backend, int(evt.Application.StatusCode))
+	s.traffic.events.Add(1)
+	if len(evt.Content.ResponseBody) > 0 {
+		s.traffic.withBody.Add(1)
+	}
+	if principal.Type != "network_principal" && principal.Type != "unknown" {
+		s.traffic.identified.Add(1)
+	}
 
 	req := accessDetectionRequest{
 		AccountID: principal.ID,
@@ -393,6 +421,8 @@ func (s *PlatformServer) processIngestEvent(ctx context.Context, evt shared.APIE
 		query:     evt.Content.QueryParams,
 		body:      evt.Content.RequestBody,
 		at:        evt.Timestamp,
+
+		networkOnly: principal.Type == "network_principal",
 	})
 	s.raise(d, req, principal.Confidence)
 
@@ -505,7 +535,17 @@ func firstNonEmpty(values map[string]string, keys ...string) string {
 	return ""
 }
 
+// shortToken shortens a credential for use as a caller ID. Collectors
+// replace credentials with keyed SM3 fingerprints ("sm3:<hex>"); those keep
+// a 12-digit prefix, which is stable per credential. Anything else keeps
+// only its first and last four characters.
 func shortToken(value string) string {
+	if fp, ok := strings.CutPrefix(value, "sm3:"); ok {
+		if len(fp) > 12 {
+			fp = fp[:12]
+		}
+		return "sm3:" + fp
+	}
 	if len(value) <= 8 {
 		return value
 	}

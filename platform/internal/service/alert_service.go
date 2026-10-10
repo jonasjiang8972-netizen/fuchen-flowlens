@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -26,7 +27,83 @@ type Alert struct {
 	Disposal           *DisposalInfo `json:"disposal,omitempty"`
 	OccurrenceCount    int           `json:"occurrence_count,omitempty"`
 	LastSeen           time.Time     `json:"last_seen,omitempty"`
+	// History records every handling step (who, when, what), oldest first.
+	History []AlertHistory `json:"history,omitempty"`
+	// Endpoints are the APIs ("METHOD /path") the detections concerned.
+	Endpoints []string `json:"endpoints,omitempty"`
 }
+
+// maxAlertEndpoints bounds the endpoints recorded per alert.
+const maxAlertEndpoints = 20
+
+// AddEndpoint records that alert id concerns endpoint.
+func (s *AlertService) AddEndpoint(id, endpoint string) {
+	if endpoint == "" {
+		return
+	}
+	s.mu.Lock()
+	a, ok := s.alerts[id]
+	changed := false
+	if ok && len(a.Endpoints) < maxAlertEndpoints {
+		found := false
+		for _, e := range a.Endpoints {
+			found = found || e == endpoint
+		}
+		if !found {
+			a.Endpoints = append(a.Endpoints, endpoint)
+			changed = true
+		}
+	}
+	s.mu.Unlock()
+	if changed {
+		s.p.markDirty(id)
+	}
+}
+
+// ForEndpoint lists the alerts concerning endpoint, newest first.
+func (s *AlertService) ForEndpoint(endpoint string) []AlertSummary {
+	s.mu.RLock()
+	var out []AlertSummary
+	for _, a := range s.alerts {
+		for _, e := range a.Endpoints {
+			if e == endpoint {
+				out = append(out, AlertSummary{ID: a.ID, Title: a.Title, Severity: a.Severity, Status: a.Status, Timestamp: a.Timestamp})
+				break
+			}
+		}
+	}
+	s.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp.After(out[j].Timestamp) })
+	if out == nil {
+		out = []AlertSummary{}
+	}
+	return out
+}
+
+// AlertHistory is one handling step on an alert.
+type AlertHistory struct {
+	Time   time.Time `json:"time"`
+	Action string    `json:"action"`
+	Status string    `json:"status"`
+	Actor  string    `json:"actor"`
+	Note   string    `json:"note,omitempty"`
+}
+
+// alertActions maps each handling action to the status it moves the alert
+// to. Disposals (block, rate limit, lock) are recorded here; carrying them
+// out is up to the gateway, WAF or SOAR that receives the forwarded event.
+var alertActions = map[string]struct{ status, label string }{
+	"acknowledge":    {"acknowledged", "确认告警"},
+	"ip_block":       {"in_progress", "封禁来源 IP"},
+	"rate_limit":     {"in_progress", "限流"},
+	"account_lock":   {"in_progress", "锁定账号"},
+	"resolve":        {"resolved", "标记已解决"},
+	"false_positive": {"false_positive", "标记误报"},
+	"reopen":         {"open", "重新打开"},
+}
+
+// maxAlertHistory bounds the handling steps kept per alert.
+const maxAlertHistory = 100
 
 type AttackStep struct {
 	Sequence  int       `json:"sequence"`
@@ -155,7 +232,8 @@ func (s *AlertService) seedAlerts() {
 	now := time.Now()
 
 	s.alerts["alt-001"] = &Alert{
-		ID: "alt-001", Timestamp: now.Add(-5 * time.Minute), Severity: "high",
+		Endpoints: []string{"GET /api/v1/order/{id}"},
+		ID:        "alt-001", Timestamp: now.Add(-5 * time.Minute), Severity: "high",
 		Title:             "疑似 BOLA 攻击：账号 usr-88213 高频遍历订单对象",
 		Description:       "账号 usr-88213 在过去 5 分钟内连续访问了 847 个不同订单 ID，遍历速率 12.4/s，远超历史基线（0.3/s）。该账号信誉分 0.62，近期有多次异常登录记录。",
 		SourceRequirement: "FR-DET-001", RiskScore: 91, Confidence: 0.92,
@@ -174,7 +252,8 @@ func (s *AlertService) seedAlerts() {
 	}
 
 	s.alerts["alt-002"] = &Alert{
-		ID: "alt-002", Timestamp: now.Add(-15 * time.Minute), Severity: "critical",
+		Endpoints: []string{"POST /api/v1/payment/checkout"},
+		ID:        "alt-002", Timestamp: now.Add(-15 * time.Minute), Severity: "critical",
 		Title:             "撞库攻击：单 IP 尝试 68 个不同账号",
 		Description:       "IP 198.51.100.22 在过去 10 分钟内对登录接口发起 247 次失败尝试，涉及 68 个不同用户名。失败率 95.5%，匹配已知撞库特征。",
 		SourceRequirement: "FR-DET-002", RiskScore: 96, Confidence: 0.97,
@@ -189,7 +268,8 @@ func (s *AlertService) seedAlerts() {
 	}
 
 	s.alerts["alt-003"] = &Alert{
-		ID: "alt-003", Timestamp: now.Add(-45 * time.Minute), Severity: "medium",
+		Endpoints: []string{"GET /api/v1/legacy/export"},
+		ID:        "alt-003", Timestamp: now.Add(-45 * time.Minute), Severity: "medium",
 		Title:             "影子 API 发现：/api/v1/legacy/export 未在 CMDB 注册",
 		Description:       "发现接口 /api/v1/legacy/export 有实际流量但未在官方 API 目录中注册。该接口返回大量敏感数据（姓名、身份证、手机号），存在数据泄露风险。",
 		SourceRequirement: "FR-AST-002", RiskScore: 65, Confidence: 0.92,
@@ -198,7 +278,8 @@ func (s *AlertService) seedAlerts() {
 	}
 
 	s.alerts["alt-004"] = &Alert{
-		ID: "alt-004", Timestamp: now.Add(-30 * time.Minute), Severity: "medium",
+		Endpoints: []string{"GET /api/v1/order/{id}"},
+		ID:        "alt-004", Timestamp: now.Add(-30 * time.Minute), Severity: "medium",
 		Title:             "异常资源消耗：订单接口 QPS 超基线 5 倍",
 		Description:       "接口 /api/v1/order/{id} 当前 QPS 达到 3800，超出历史基线（750 QPS）5 倍。来源 IP 203.0.113.18 贡献了 42% 的流量。",
 		SourceRequirement: "FR-DET-004", RiskScore: 72, Confidence: 0.85,
@@ -210,7 +291,8 @@ func (s *AlertService) seedAlerts() {
 	}
 
 	s.alerts["alt-005"] = &Alert{
-		ID: "alt-005", Timestamp: now.Add(-2 * time.Hour), Severity: "high",
+		Endpoints: []string{"GET /api/v1/user/{id}"},
+		ID:        "alt-005", Timestamp: now.Add(-2 * time.Hour), Severity: "high",
 		Title:             "数据泄露风险：用户接口响应体包含未脱敏身份证号",
 		Description:       "接口 /api/v1/user/{id} 响应体中发现未脱敏的身份证号字段（id_card_no），格式为 18 位数字，违反《个人信息保护法》第 51 条。",
 		SourceRequirement: "FR-DLP-003", RiskScore: 82, Confidence: 0.95,
@@ -219,7 +301,8 @@ func (s *AlertService) seedAlerts() {
 	}
 
 	s.alerts["alt-006"] = &Alert{
-		ID: "alt-006", Timestamp: now.Add(-20 * time.Minute), Severity: "critical",
+		Endpoints: []string{"POST /api/v1/payment/checkout"},
+		ID:        "alt-006", Timestamp: now.Add(-20 * time.Minute), Severity: "critical",
 		Title:             "支付接口撞库：单设备尝试 120 张不同银行卡",
 		Description:       "设备指纹 df-c44e5a 在 30 分钟内通过 /api/v1/payment/checkout 尝试了 120 张不同银行卡的卡号，成功 3 次。",
 		SourceRequirement: "FR-RISK-003", RiskScore: 94, Confidence: 0.93,
@@ -233,7 +316,8 @@ func (s *AlertService) seedAlerts() {
 	}
 
 	s.alerts["alt-007"] = &Alert{
-		ID: "alt-007", Timestamp: now.Add(-1 * time.Hour), Severity: "medium",
+		Endpoints: []string{"GET /api/v1/legacy/export"},
+		ID:        "alt-007", Timestamp: now.Add(-1 * time.Hour), Severity: "medium",
 		Title:             "影子 API 告警：/api/v1/user/{id}/orders 未在 CMDB 注册",
 		Description:       "发现接口 /api/v1/user/{id}/orders 有实际流量但未在官方 API 目录中注册。该接口返回用户完整订单历史。",
 		SourceRequirement: "FR-AST-002", RiskScore: 58, Confidence: 0.88,
@@ -242,7 +326,8 @@ func (s *AlertService) seedAlerts() {
 	}
 
 	s.alerts["alt-008"] = &Alert{
-		ID: "alt-008", Timestamp: now.Add(-3 * time.Hour), Severity: "high",
+		Endpoints: []string{"GET /api/v1/legacy/export"},
+		ID:        "alt-008", Timestamp: now.Add(-3 * time.Hour), Severity: "high",
 		Title:             "明文传输敏感数据：legacy/export 通过 HTTP 传输",
 		Description:       "接口 /api/v1/legacy/export 通过 HTTP（非 HTTPS）传输，响应体包含姓名、身份证、手机号等敏感信息。",
 		SourceRequirement: "FR-DET-008", RiskScore: 78, Confidence: 0.96,
@@ -359,7 +444,7 @@ func (s *AlertService) CreateDetectionAlert(sourceRequirement, severity, title, 
 // alert has been acted on (disposal in progress or closed) a recurring attack
 // should raise a fresh alert.
 func mergeable(a *Alert, now time.Time) bool {
-	if a.Status != "open" && a.Status != "acknowledged" {
+	if a.Status != "open" && a.Status != "acknowledged" && a.Status != "in_progress" {
 		return false
 	}
 	return now.Sub(a.LastSeen) <= detectionMergeWindow
@@ -400,92 +485,189 @@ func (s *AlertService) GetDetail(id string) (*AlertDetail, error) {
 	}
 	return &AlertDetail{
 		Alert:         *a,
-		RelatedAlerts: s.getRelatedAlerts(id),
-		Timeline:      s.getTimeline(id),
-		RawData:       s.getRawData(id),
+		RelatedAlerts: s.relatedLocked(a),
+		Timeline:      timelineOf(a),
+		RawData:       evidenceOf(a),
 	}, nil
 }
 
-func (s *AlertService) getRelatedAlerts(alertID string) []string {
-	related := map[string][]string{
-		"alt-001": {"alt-004", "alt-005"},
-		"alt-002": {"alt-006"},
-		"alt-003": {"alt-007", "alt-008"},
-		"alt-004": {"alt-001"},
-		"alt-005": {"alt-001"},
-		"alt-006": {"alt-002"},
-		"alt-007": {"alt-003"},
-		"alt-008": {"alt-003"},
+// maxRelatedAlerts bounds the related alerts listed for one alert.
+const maxRelatedAlerts = 10
+
+// relatedLocked lists other alerts from the same source IP or account,
+// newest first.
+func (s *AlertService) relatedLocked(a *Alert) []string {
+	var rel []*Alert
+	for _, o := range s.alerts {
+		if o.ID == a.ID {
+			continue
+		}
+		if (a.SourceIP != "" && o.SourceIP == a.SourceIP) || (a.AccountID != "" && o.AccountID == a.AccountID) {
+			rel = append(rel, o)
+		}
 	}
-	if r, ok := related[alertID]; ok {
-		return r
+	sort.Slice(rel, func(i, j int) bool { return rel[i].Timestamp.After(rel[j].Timestamp) })
+	ids := []string{}
+	for i, o := range rel {
+		if i >= maxRelatedAlerts {
+			break
+		}
+		ids = append(ids, o.ID)
 	}
-	return []string{}
+	return ids
 }
 
-func (s *AlertService) getTimeline(alertID string) []TimelineEvent {
-	now := time.Now()
-	timelines := map[string][]TimelineEvent{
-		"alt-001": {
-			{Time: now.Add(-60 * time.Minute), Event: "基线建立", Detail: "账号 usr-88213 行为基线建立完成"},
-			{Time: now.Add(-35 * time.Minute), Event: "正常登录", Detail: "从常用 IP 10.0.1.15 登录"},
-			{Time: now.Add(-30 * time.Minute), Event: "IP 切换", Detail: "IP 切换至代理地址 203.0.113.18"},
-			{Time: now.Add(-25 * time.Minute), Event: "行为异常", Detail: "开始遍历不属于自己的订单 ID"},
-			{Time: now.Add(-20 * time.Minute), Event: "告警触发", Detail: "BOLA 检测引擎触发告警"},
-			{Time: now.Add(-5 * time.Minute), Event: "持续攻击", Detail: "遍历仍在继续，已访问 847 个 ID"},
-		},
-		"alt-002": {
-			{Time: now.Add(-30 * time.Minute), Event: "探测", Detail: "攻击者探测登录接口"},
-			{Time: now.Add(-25 * time.Minute), Event: "撞库开始", Detail: "开始批量尝试不同用户名"},
-			{Time: now.Add(-15 * time.Minute), Event: "告警触发", Detail: "撞库检测引擎触发告警"},
-			{Time: now.Add(-10 * time.Minute), Event: "人工确认", Detail: "安全运营人员确认攻击"},
-		},
-		"alt-006": {
-			{Time: now.Add(-50 * time.Minute), Event: "卡片测试开始", Detail: "设备 df-c44e5a 开始测试银行卡"},
-			{Time: now.Add(-35 * time.Minute), Event: "首次命中", Detail: "成功匹配 1 张有效卡"},
-			{Time: now.Add(-20 * time.Minute), Event: "持续攻击", Detail: "已尝试 120 张卡，成功 3 次"},
-		},
+// timelineOf merges the alert's detections and handling steps in time
+// order.
+func timelineOf(a *Alert) []TimelineEvent {
+	events := []TimelineEvent{{Time: a.Timestamp, Event: "告警产生", Detail: a.Title}}
+	for _, step := range a.AttackPath {
+		detail := step.Detail
+		if step.Path != "" {
+			detail = fmt.Sprintf("%s（%s）", detail, step.Path)
+		}
+		events = append(events, TimelineEvent{Time: step.Timestamp, Event: "检测命中", Detail: detail})
 	}
-	if t, ok := timelines[alertID]; ok {
-		return t
+	for _, h := range a.History {
+		label := alertActions[h.Action].label
+		if label == "" {
+			label = h.Action
+		}
+		detail := fmt.Sprintf("%s：%s", h.Actor, label)
+		if h.Note != "" {
+			detail += "，" + h.Note
+		}
+		events = append(events, TimelineEvent{Time: h.Time, Event: "处置", Detail: detail})
 	}
-	return []TimelineEvent{}
+	sort.SliceStable(events, func(i, j int) bool { return events[i].Time.Before(events[j].Time) })
+	return events
 }
 
-func (s *AlertService) getRawData(alertID string) map[string]string {
-	return map[string]string{
-		"user_agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-		"ja3_fingerprint": "e7d705a3286e19ea42f587b344ee6865",
-		"request_count":   "847",
-		"unique_ids":      "847",
-		"success_rate":    "84.3%",
-		"duration":        "25 minutes",
+// evidenceOf summarises what the platform observed for the alert.
+func evidenceOf(a *Alert) map[string]string {
+	occ := a.OccurrenceCount
+	if occ < 1 {
+		occ = 1
 	}
+	last := a.LastSeen
+	if last.IsZero() {
+		last = a.Timestamp
+	}
+	ev := map[string]string{
+		"occurrences": fmt.Sprintf("%d", occ),
+		"first_seen":  a.Timestamp.Format(time.RFC3339),
+		"last_seen":   last.Format(time.RFC3339),
+		"duration":    last.Sub(a.Timestamp).Round(time.Second).String(),
+		"risk_score":  fmt.Sprintf("%d", a.RiskScore),
+		"confidence":  fmt.Sprintf("%.2f", a.Confidence),
+	}
+	if a.SourceIP != "" {
+		ev["source_ip"] = a.SourceIP
+	}
+	if a.AccountID != "" {
+		ev["account_id"] = a.AccountID
+	}
+	if a.SourceRequirement != "" {
+		ev["source_requirement"] = a.SourceRequirement
+	}
+	return ev
 }
 
-// ExecuteAction records a disposal action on an alert. The change is saved
-// before it is reported; if saving fails the alert is restored.
-func (s *AlertService) ExecuteAction(alertID, action, target string, durationMin int) error {
+// ExecuteAction applies a handling action (see alertActions) by actor and
+// records it in the alert's history. The change is saved before it is
+// reported; if saving fails the alert is restored. An unknown action is an
+// ErrInvalid error.
+func (s *AlertService) ExecuteAction(alertID, action, actor, note string) (*Alert, error) {
+	def, ok := alertActions[action]
+	if !ok {
+		return nil, fmt.Errorf("%w: 不支持的处置动作 %s", ErrInvalid, action)
+	}
+	if len(note) > 500 {
+		note = note[:500]
+	}
 	s.mu.Lock()
 	a, ok := s.alerts[alertID]
 	if !ok {
 		s.mu.Unlock()
-		return fmt.Errorf("alert %s: %w", alertID, ErrNotFound)
+		return nil, fmt.Errorf("alert %s: %w", alertID, ErrNotFound)
 	}
-	prevStatus, prevDisposal := a.Status, a.Disposal
-	a.Status = "in_progress"
-	a.Disposal = &DisposalInfo{
-		Action:     action,
-		Status:     "success",
-		ExecutedAt: time.Now(),
+	before := *a
+	before.History = append([]AlertHistory(nil), a.History...)
+	now := s.now()
+	a.Status = def.status
+	if def.status == "in_progress" {
+		a.Disposal = &DisposalInfo{Action: action, Status: "recorded", ExecutedAt: now}
+	}
+	a.History = append(a.History, AlertHistory{Time: now, Action: action, Status: def.status, Actor: actor, Note: note})
+	if len(a.History) > maxAlertHistory {
+		a.History = append([]AlertHistory(nil), a.History[len(a.History)-maxAlertHistory:]...)
+	}
+	if def.status == "open" {
+		a.LastSeen = now // reopened: merge new detections from now on
 	}
 	s.mu.Unlock()
 
 	if err := s.p.writeThrough(context.Background(), []string{alertID}, s.snapshot); err != nil {
 		s.mu.Lock()
-		a.Status, a.Disposal = prevStatus, prevDisposal
+		*a = before
 		s.mu.Unlock()
-		return fmt.Errorf("save alert %s: %w", alertID, err)
+		return nil, fmt.Errorf("save alert %s: %w", alertID, err)
 	}
-	return nil
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c := *a
+	return &c, nil
+}
+
+// DayStat counts the alerts raised and closed on one calendar day.
+type DayStat struct {
+	Date     string `json:"date"` // YYYY-MM-DD in the platform's time zone
+	Critical int    `json:"critical"`
+	High     int    `json:"high"`
+	Medium   int    `json:"medium"`
+	Low      int    `json:"low"`
+	Closed   int    `json:"closed"` // resolved or marked false positive
+}
+
+// Trend returns one DayStat per day for the last days days (today
+// included), oldest first. An alert counts on the day it was raised; a
+// closure counts on the day it was resolved or marked false positive.
+func (s *AlertService) Trend(days int) []DayStat {
+	if days < 1 {
+		days = 1
+	}
+	now := s.now().In(time.Local)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	start := today.AddDate(0, 0, -(days - 1))
+	out := make([]DayStat, days)
+	index := make(map[string]int, days)
+	for i := range out {
+		d := start.AddDate(0, 0, i).Format("2006-01-02")
+		out[i].Date = d
+		index[d] = i
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, a := range s.alerts {
+		if i, ok := index[a.Timestamp.In(time.Local).Format("2006-01-02")]; ok {
+			switch a.Severity {
+			case "critical":
+				out[i].Critical++
+			case "high":
+				out[i].High++
+			case "medium":
+				out[i].Medium++
+			default:
+				out[i].Low++
+			}
+		}
+		for _, h := range a.History {
+			if h.Status == "resolved" || h.Status == "false_positive" {
+				if i, ok := index[h.Time.In(time.Local).Format("2006-01-02")]; ok {
+					out[i].Closed++
+				}
+			}
+		}
+	}
+	return out
 }
